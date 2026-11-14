@@ -29,11 +29,11 @@ This package ships a written design guide ([`docs/pacing.md`](docs/pacing.md)) a
 
 ## The head overlord: which model and what effort
 
-- **Model:** run the head overlord on the strongest model you have — we recommend **Claude Opus 5.5** in Claude Code. The coordinator makes the judgment calls (scope, fix versus defer, routing, triage), so a weak coordinator wastes far more than it saves. Keep it out of bulk editing: it writes briefs, not code.
-- **Effort:** high by default. **xhigh/max** only for a genuinely hard judgment call — a design decision, a review spiral, a postmortem — and never for routine heartbeats: higher effort costs tokens on every wake.
-- **Sub-overlords:** effort per the task table below — cheap models at high effort for narrow, fully specified fixes; mid-tier at default for standard work; strong models at high for hard builds; max only for retries or judgment-only reviews. Always set effort explicitly on every launch.
+- **Always Claude Opus 5.5, always high effort.** Run the head overlord on **Claude Opus 5.5** in Claude Code at **high** effort — the right setting for coordinating: reading reports, deciding, writing briefs, talking to the human. Do not raise the coordinator's own effort for hard problems.
+- **Hard judgment calls go to a planning sub-overlord.** Planning a big change, a design or architecture decision, breaking a review spiral, a postmortem — the head overlord does not think harder itself. It launches a dedicated planning sub-overlord on a stronger setting: **Opus 5.5 at xhigh or max**, or the strongest frontier model available (e.g. **Claude Fable**). That lane writes the plan; the head overlord reads it and decides.
+- **Build and fix sub-overlords follow the task table below:** cheap models at high effort for narrow fixes, mid-tier at default for standard work, strong models at high for hard builds. Reviews use a different model from the builder.
 
-Why: follow the model provider's guidance — start at the recommended level and raise effort only where it measurably helps. Re-check when new models ship, and keep the outcome ledger.
+Why: one steady, affordable coordinator that is awake all the time — with expensive thinking bought only per hard problem, in an isolated lane, where it pays off.
 
 ## 3. Choosing model and effort per task
 
