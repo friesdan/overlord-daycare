@@ -1,0 +1,63 @@
+# CI template — copy this file to .github/workflows/ci.yml in YOUR project,
+# then replace the placeholder commands (marked with <-) below.
+#
+# It implements the layer structure from docs/ci-and-gates.md:
+#   - the same fast checks your pre-push hook runs (examples/hooks/pre-push),
+#     so local and CI agree on what "green" means
+#   - plus the slow checks that are too heavy to run before every push
+#   - a placeholder job for independent review by a different model
+# Written for GitHub Actions; any CI that runs on every push is the same layer.
+
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Use whatever runtime your project needs; pinned major version, and a
+      # pinned language version so green means the same thing every run.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci # <- your install command
+
+      # --- the fast checks: SAME set as examples/hooks/pre-push -------------
+      - name: lint
+        run: npm run lint # <-
+      - name: typecheck
+        run: npm run typecheck # <-
+      - name: unit tests
+        run: npm run test:unit # <-
+
+      # --- the slow checks: CI-only, too heavy for a pre-push hook ----------
+      - name: full test suite
+        run: npm test # <-
+      - name: build
+        run: npm run build # <-
+
+      # Heavy jobs (end-to-end suites, multi-platform builds)? Run them on a
+      # self-hosted runner on a spare machine to save hosted CI minutes, and
+      # give them their OWN runner lane (a label selected via runs-on) so they
+      # never block this quick lane — a fast red answer beats a slow green one.
+
+  # Placeholder: independent review (docs/ci-and-gates.md). Run a model from a
+  # DIFFERENT family than the one that wrote the code, on the exact head
+  # (needs: checks ensures the code is worth reviewing first), or point an AI
+  # review bot at the PR as an outside backstop. Its findings are judged, not
+  # obeyed: only critical issues (money, security, data loss, broken live flow)
+  # block; the rest become logged follow-ups with a trigger.
+  #
+  # review:
+  #   needs: checks
+  #   if: github.event_name == 'pull_request'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: independent review (different model family than the builder)
+  #       run: <your review command / review bot call>

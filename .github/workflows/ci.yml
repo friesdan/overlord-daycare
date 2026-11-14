@@ -1,0 +1,29 @@
+# CI for this starter kit: the same checks the README tells you to run
+# locally, on every push and pull request (docs/ci-and-gates.md, layer 1).
+# A commented template to copy into your own project is at
+# examples/github-actions/ci.yml.
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # smoke.sh verifies shellcheck cleanliness of every script when shellcheck
+      # is present, so install it rather than letting that check skip.
+      - name: install shellcheck
+        run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+
+      - name: smoke test (whole loop on stub worker/reviewer commands, no AI)
+        run: tests/smoke.sh
+
+      - name: pacing engine unit tests
+        run: node --test pacing/
