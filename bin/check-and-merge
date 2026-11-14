@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # bin/check-and-merge [--yes] <task-name>
 #
-# Run the configured test command inside the task's worktree, show a summary
-# (tests, review verdict, diffstat), then ask "Merge into <base>? [y/N]"
-# unless the approval rule is 'auto' or --yes was given. On approval: merge
-# the task branch into the base branch (a real merge — fast-forward only when
-# possible; aborts on conflict), remove the worktree, keep the branch.
-# NEVER pushes. Updates STATE.md.
+# The merge gate. The human sets the rules and the gates; the coordinator may
+# merge on its own once you trust those gates — that trust is the approval
+# rule: 'human' (default) asks "Merge into <base>? [y/N]", 'auto' merges with
+# no prompt only when tests pass AND the review verdict is CLEAN. Runs the
+# configured test command inside the task's worktree, shows a summary (tests,
+# review verdict, diffstat), then applies the rule (--yes counts as a human
+# yes). On approval: merge the task branch into the base branch (a real merge
+# — fast-forward only when possible; aborts on conflict), remove the worktree,
+# keep the branch. NEVER pushes. Updates STATE.md.
 set -u -o pipefail
 # shellcheck disable=SC1091  # path is relative to this script
 
@@ -48,8 +51,8 @@ load_config
 
 branch="$(task_branch "$task")"
 run_dir="$(task_run_dir "$task")"
-git -C "$MTC_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch" || \
-    die "branch $branch not found in $MTC_PROJECT_DIR — run bin/worker $task first"
+git -C "$OVERLORD_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch" || \
+    die "branch $branch not found in $OVERLORD_PROJECT_DIR — run bin/worker $task first"
 
 worktree="$(state_get "$task" worktree)"
 [ -n "$worktree" ] && [ -d "$worktree" ] || \
@@ -60,23 +63,23 @@ mkdir -p "$run_dir"
 
 # ---- 1. Tests, inside the worktree ----------------------------------------
 info "==> running tests in $worktree"
-info "    test command: $MTC_TEST_CMD"
+info "    test command: $OVERLORD_TEST_CMD"
 tests_rc=0
-( cd "$worktree" && run_bounded "$MTC_TEST_TIMEOUT" "$MTC_TEST_CMD" ) \
+( cd "$worktree" && run_bounded "$OVERLORD_TEST_TIMEOUT" "$OVERLORD_TEST_CMD" ) \
     2>&1 | tee "$run_dir/tests.log" || tests_rc=$?
 if [ "$tests_rc" -eq 0 ]; then tests="pass"; else tests="FAIL (exit $tests_rc)"; fi
 
 # ---- 2. Review verdict + diffstat ------------------------------------------
 verdict="$(state_get "$task" review_verdict)"
 [ -n "$verdict" ] || verdict="(none — run bin/review $task)"
-diffstat="$(git -C "$MTC_PROJECT_DIR" diff --stat "$MTC_BASE_BRANCH...$branch" | tail -1)"
+diffstat="$(git -C "$OVERLORD_PROJECT_DIR" diff --stat "$OVERLORD_BASE_BRANCH...$branch" | tail -1)"
 
 echo
 info "================= merge gate: $task ================="
 printf '  tests   : %s\n' "$tests"
 printf '  review  : %s\n' "$verdict"
 printf '  diff    : %s\n' "${diffstat:-<empty>}"
-printf '  branch  : %s -> merge into %s\n' "$branch" "$MTC_BASE_BRANCH"
+printf '  branch  : %s -> merge into %s\n' "$branch" "$OVERLORD_BASE_BRANCH"
 info "====================================================="
 
 if [ "$tests" != "pass" ]; then
@@ -88,13 +91,13 @@ fi
 state_set "$task" tests "pass"
 
 # ---- 3. The approval decision ----------------------------------------------
-if [ "$MTC_APPROVAL_RULE" != "auto" ] && [ "$yes_flag" -ne 1 ]; then
+if [ "$OVERLORD_APPROVAL_RULE" != "auto" ] && [ "$yes_flag" -ne 1 ]; then
     if [ "$verdict" = "FINDINGS" ]; then
         info "NOTE: review verdict is FINDINGS — read $run_dir/review.md before answering."
     fi
     answer=""
     if [ -t 0 ] || [ -r /dev/tty ]; then
-        printf 'Merge into %s? [y/N] ' "$MTC_BASE_BRANCH"
+        printf 'Merge into %s? [y/N] ' "$OVERLORD_BASE_BRANCH"
         if [ -t 0 ]; then read -r answer || answer=""; else read -r answer < /dev/tty || answer=""; fi
     else
         info "no terminal for the approval question — treating it as 'no'."
@@ -107,7 +110,7 @@ if [ "$MTC_APPROVAL_RULE" != "auto" ] && [ "$yes_flag" -ne 1 ]; then
            state_set "$task" next_step "merge gate: awaiting approval (bin/check-and-merge $task)"
            exit 0 ;;
     esac
-elif [ "$MTC_APPROVAL_RULE" = "auto" ] && [ "$yes_flag" -ne 1 ]; then
+elif [ "$OVERLORD_APPROVAL_RULE" = "auto" ] && [ "$yes_flag" -ne 1 ]; then
     if [ "$verdict" != "CLEAN" ]; then
         state_set "$task" next_step "auto-merge refused: review verdict is '$verdict' — fix findings or approve manually"
         info "approval rule is 'auto' but the review verdict is '$verdict' — NOT merging.
@@ -123,42 +126,42 @@ else
 fi
 
 # ---- 4. Merge into the base branch ----------------------------------------
-current="$(git -C "$MTC_PROJECT_DIR" rev-parse --abbrev-ref HEAD)"
-if [ "$current" != "$MTC_BASE_BRANCH" ]; then
-    if [ -n "$(git -C "$MTC_PROJECT_DIR" status --porcelain)" ]; then
-        state_set "$task" next_step "merge gate: approved, but $MTC_PROJECT_DIR is on '$current' with uncommitted changes — commit or stash, checkout $MTC_BASE_BRANCH, rerun"
-        die "$MTC_PROJECT_DIR is on branch '$current' with uncommitted changes.
-Commit or stash there, 'git checkout $MTC_BASE_BRANCH', then re-run: bin/check-and-merge $task"
+current="$(git -C "$OVERLORD_PROJECT_DIR" rev-parse --abbrev-ref HEAD)"
+if [ "$current" != "$OVERLORD_BASE_BRANCH" ]; then
+    if [ -n "$(git -C "$OVERLORD_PROJECT_DIR" status --porcelain)" ]; then
+        state_set "$task" next_step "merge gate: approved, but $OVERLORD_PROJECT_DIR is on '$current' with uncommitted changes — commit or stash, checkout $OVERLORD_BASE_BRANCH, rerun"
+        die "$OVERLORD_PROJECT_DIR is on branch '$current' with uncommitted changes.
+Commit or stash there, 'git checkout $OVERLORD_BASE_BRANCH', then re-run: bin/check-and-merge $task"
     fi
-    info "==> switching $MTC_PROJECT_DIR from '$current' to '$MTC_BASE_BRANCH' for the merge"
-    git -C "$MTC_PROJECT_DIR" checkout "$MTC_BASE_BRANCH" > "$run_dir/merge.log" 2>&1 \
-        || die "git checkout $MTC_BASE_BRANCH failed (see $run_dir/merge.log)"
+    info "==> switching $OVERLORD_PROJECT_DIR from '$current' to '$OVERLORD_BASE_BRANCH' for the merge"
+    git -C "$OVERLORD_PROJECT_DIR" checkout "$OVERLORD_BASE_BRANCH" > "$run_dir/merge.log" 2>&1 \
+        || die "git checkout $OVERLORD_BASE_BRANCH failed (see $run_dir/merge.log)"
 fi
 
-info "==> merging $branch into $MTC_BASE_BRANCH (never pushes)"
-if ! git -C "$MTC_PROJECT_DIR" merge --no-edit "$branch" >> "$run_dir/merge.log" 2>&1; then
-    git -C "$MTC_PROJECT_DIR" merge --abort >> "$run_dir/merge.log" 2>&1
-    state_set "$task" next_step "merge conflict: resolve by hand in $MTC_PROJECT_DIR (merge mt branch manually), or rebase $branch onto $MTC_BASE_BRANCH"
-    die "merge conflict — merge aborted cleanly, nothing changed on $MTC_BASE_BRANCH.
+info "==> merging $branch into $OVERLORD_BASE_BRANCH (never pushes)"
+if ! git -C "$OVERLORD_PROJECT_DIR" merge --no-edit "$branch" >> "$run_dir/merge.log" 2>&1; then
+    git -C "$OVERLORD_PROJECT_DIR" merge --abort >> "$run_dir/merge.log" 2>&1
+    state_set "$task" next_step "merge conflict: resolve by hand in $OVERLORD_PROJECT_DIR (merge mt branch manually), or rebase $branch onto $OVERLORD_BASE_BRANCH"
+    die "merge conflict — merge aborted cleanly, nothing changed on $OVERLORD_BASE_BRANCH.
 The branch $branch and worktree $worktree are untouched.
-Resolve by hand: cd $MTC_PROJECT_DIR && git merge $branch"
+Resolve by hand: cd $OVERLORD_PROJECT_DIR && git merge $branch"
 fi
 tail -3 "$run_dir/merge.log" 2>/dev/null || true
 
 # ---- 5. Clean up the worktree (branch is kept as the record) ---------------
-if git -C "$MTC_PROJECT_DIR" worktree remove "$worktree" >> "$run_dir/merge.log" 2>&1; then
+if git -C "$OVERLORD_PROJECT_DIR" worktree remove "$worktree" >> "$run_dir/merge.log" 2>&1; then
     info "==> worktree removed: $worktree"
 else
     warn "could not remove worktree $worktree (uncommitted files?) — remove it with:
-  git -C \"$MTC_PROJECT_DIR\" worktree remove --force \"$worktree\""
+  git -C \"$OVERLORD_PROJECT_DIR\" worktree remove --force \"$worktree\""
 fi
 
 state_set "$task" status "merged"
 state_set "$task" last_step "merge"
-state_set "$task" next_step "none (merged; branch $branch kept — delete with: git -C \"$MTC_PROJECT_DIR\" branch -d $branch)"
+state_set "$task" next_step "none (merged; branch $branch kept — delete with: git -C \"$OVERLORD_PROJECT_DIR\" branch -d $branch)"
 state_set "$task" worktree "(removed: $worktree)"
 
 echo
-info "merged $branch into $MTC_BASE_BRANCH. NOT pushed — push yourself when ready:"
-info "  git -C \"$MTC_PROJECT_DIR\" push"
+info "merged $branch into $OVERLORD_BASE_BRANCH. NOT pushed — push yourself when ready:"
+info "  git -C \"$OVERLORD_PROJECT_DIR\" push"
 exit 0

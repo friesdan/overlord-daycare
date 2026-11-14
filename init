@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# ./init — interactive setup for the agent-merge-train starter kit.
+# ./init — interactive setup for the Overlord Daycare starter kit.
 #
 # Asks a handful of questions (all with sensible defaults) and writes:
-#   .mtc/config.env   — every setting, editable by hand
-#   .mtc/SKILL.md     — a COPY of coordinator-skill/SKILL.md with the
+#   .overlord/config.env   — every setting, editable by hand
+#   .overlord/SKILL.md     — a COPY of coordinator-skill/SKILL.md with the
 #                       <<YOUR ...>> placeholders filled in
-#   .mtc/*.md         — small starter files the skill points at
+#   .overlord/*.md         — small starter files the skill points at
 #
 # Non-interactive: pass flags (--project, --test-cmd, --worker, --reviewer,
-# --approval, --base, --worktree-root) or set MTC_* env vars as defaults.
+# --approval, --base, --worktree-root) or set OVERLORD_* env vars as defaults.
 # ./init --demo configures the built-in demo project instead. Idempotent:
-# re-running updates the config; the .mtc/*.md starter files are only created
+# re-running updates the config; the .overlord/*.md starter files are only created
 # if missing so your edits survive.
 # shellcheck shell=bash disable=SC2016,SC1091  # $PROMPT templates are expanded by bin/*, not here
 set -u
@@ -23,13 +23,13 @@ usage: ./init [options]
 
 options:
   --demo              configure the built-in demo (examples/demo-project copied
-                      to .mtc/demo-project, a fresh throwaway git repo)
+                      to .overlord/demo-project, a fresh throwaway git repo)
   --project PATH      target project (a git repository)
   --base BRANCH       branch to branch from and merge into (default: detected)
   --test-cmd CMD      command that runs the tests in the project root
   --worker CMD        worker AI command template ('"$PROMPT"' = task text)
   --reviewer CMD      reviewer AI command template ('"$PROMPT"' = review text)
-  --approval RULE     human-approve (default) or auto (see README)
+  --approval RULE     human (default) or auto (see README)
   --worktree-root D   where task worktrees live
   --force             no extra effect today: config is always rewritten;
                       here so scripts/CI can be explicit
@@ -89,23 +89,23 @@ detect_base() {
 
 # ---- Existing config provides defaults (idempotent re-runs) ----------------
 OLD_PROJECT="" OLD_TESTCMD="" OLD_WORKER="" OLD_REVIEWER="" OLD_APPROVAL=""
-if [ -f "$MTC_CONFIG" ]; then
-    OLD_PROJECT="$(  sed -n "s/^MTC_PROJECT_DIR='\(.*\)'$/\1/p" "$MTC_CONFIG" | tail -1)"
-    OLD_TESTCMD="$(  sed -n "s/^MTC_TEST_CMD='\(.*\)'$/\1/p"       "$MTC_CONFIG" | tail -1)"
-    OLD_WORKER="$(   sed -n "s/^MTC_WORKER_CMD='\(.*\)'$/\1/p"     "$MTC_CONFIG" | tail -1)"
-    OLD_REVIEWER="$( sed -n "s/^MTC_REVIEWER_CMD='\(.*\)'$/\1/p"   "$MTC_CONFIG" | tail -1)"
-    OLD_APPROVAL="$( sed -n "s/^MTC_APPROVAL_RULE='\(.*\)'$/\1/p"  "$MTC_CONFIG" | tail -1)"
+if [ -f "$OVERLORD_CONFIG" ]; then
+    OLD_PROJECT="$(  sed -n "s/^OVERLORD_PROJECT_DIR='\(.*\)'$/\1/p" "$OVERLORD_CONFIG" | tail -1)"
+    OLD_TESTCMD="$(  sed -n "s/^OVERLORD_TEST_CMD='\(.*\)'$/\1/p"       "$OVERLORD_CONFIG" | tail -1)"
+    OLD_WORKER="$(   sed -n "s/^OVERLORD_WORKER_CMD='\(.*\)'$/\1/p"     "$OVERLORD_CONFIG" | tail -1)"
+    OLD_REVIEWER="$( sed -n "s/^OVERLORD_REVIEWER_CMD='\(.*\)'$/\1/p"   "$OVERLORD_CONFIG" | tail -1)"
+    OLD_APPROVAL="$( sed -n "s/^OVERLORD_APPROVAL_RULE='\(.*\)'$/\1/p"  "$OVERLORD_CONFIG" | tail -1)"
 fi
-[ -n "$PROJECT"  ] || PROJECT="${MTC_PROJECT_DIR:-$OLD_PROJECT}"
-[ -n "$TESTCMD"  ] || TESTCMD="${MTC_TEST_CMD:-$OLD_TESTCMD}"
-[ -n "$WORKER"   ] || WORKER="${MTC_WORKER_CMD:-$OLD_WORKER}"
-[ -n "$REVIEWER" ] || REVIEWER="${MTC_REVIEWER_CMD:-$OLD_REVIEWER}"
-[ -n "$APPROVAL" ] || APPROVAL="${MTC_APPROVAL_RULE:-$OLD_APPROVAL}"
+[ -n "$PROJECT"  ] || PROJECT="${OVERLORD_PROJECT_DIR:-$OLD_PROJECT}"
+[ -n "$TESTCMD"  ] || TESTCMD="${OVERLORD_TEST_CMD:-$OLD_TESTCMD}"
+[ -n "$WORKER"   ] || WORKER="${OVERLORD_WORKER_CMD:-$OLD_WORKER}"
+[ -n "$REVIEWER" ] || REVIEWER="${OVERLORD_REVIEWER_CMD:-$OLD_REVIEWER}"
+[ -n "$APPROVAL" ] || APPROVAL="${OVERLORD_APPROVAL_RULE:-$OLD_APPROVAL}"
 
 # ---- Demo mode: build the throwaway project repo ----------------------------
 if [ "$DEMO" -eq 1 ]; then
-    demo_src="$MTC_KIT/examples/demo-project"
-    demo_dst="$MTC_DIR/demo-project"
+    demo_src="$OVERLORD_KIT/examples/demo-project"
+    demo_dst="$OVERLORD_DIR/demo-project"
     info "==> setting up the demo project at $demo_dst (recreated fresh)"
     rm -rf "$demo_dst"
     mkdir -p "$demo_dst"
@@ -113,7 +113,7 @@ if [ "$DEMO" -eq 1 ]; then
     git -C "$demo_dst" init -q
     git -C "$demo_dst" checkout -q -b main
     # A local, generic identity so commits work on machines with no git config.
-    git -C "$demo_dst" config user.name "Merge Train Demo"
+    git -C "$demo_dst" config user.name "Overlord Daycare Demo"
     git -C "$demo_dst" config user.email "demo@example.com"
     git -C "$demo_dst" add -A
     git -C "$demo_dst" commit -qm "demo project: calc with one failing test"
@@ -135,13 +135,13 @@ if [ "$DEMO" -eq 1 ]; then
         warn "only 'codex' found — worker and reviewer will be the same model."
         warn "an independent reviewer (e.g. claude) catches more; install one later."
     else
-        WORKER="\"$MTC_KIT/examples/stubs/fix-demo-worker.sh\""
-        REVIEWER="\"$MTC_KIT/examples/stubs/clean-reviewer.sh\""
+        WORKER="\"$OVERLORD_KIT/examples/stubs/fix-demo-worker.sh\""
+        REVIEWER="\"$OVERLORD_KIT/examples/stubs/clean-reviewer.sh\""
         warn "no AI CLI found (claude/codex) — the demo will use stub commands"
         warn "that apply a canned fix with no AI. Install a CLI and re-run"
         warn "./init --demo to see the real thing."
     fi
-    [ -n "$APPROVAL" ] || APPROVAL="human-approve"
+    [ -n "$APPROVAL" ] || APPROVAL="human"
 fi
 
 # ---- Real project: gather the remaining values ------------------------------
@@ -157,7 +157,7 @@ if [ "$DEMO" -ne 1 ]; then
     fi
 
     if [ "$interactive" -eq 1 ]; then
-        info "=== agent-merge-train setup — Enter accepts each [default] ==="
+        info "=== Overlord Daycare setup — Enter accepts each [default] ==="
         tries=0
         while true; do
             ask PROJECT "1. Target project path (a git repo)" "${PROJECT:-$PWD/my-project}"
@@ -194,83 +194,83 @@ if [ "$DEMO" -ne 1 ]; then
             warn "worker and reviewer commands are identical — an independent"
             warn "reviewer (a different model family) catches more (HOW-WE-WORK.md §1)."
         fi
-        [ -n "$APPROVAL" ] || APPROVAL="human-approve"
-        ask APPROVAL "6. Approval rule: human-approve or auto" "$APPROVAL"
-        [ -n "$WTROOT" ] || WTROOT="$HOME/.agent-merge-train/worktrees/$(basename "$PROJECT")"
+        [ -n "$APPROVAL" ] || APPROVAL="human"
+        ask APPROVAL "6. Approval rule: human or auto" "$APPROVAL"
+        [ -n "$WTROOT" ] || WTROOT="$HOME/.overlord-daycare/worktrees/$(basename "$PROJECT")"
         ask WTROOT "7. Directory for task worktrees" "$WTROOT"
     fi
 fi
 
 case "$APPROVAL" in
-    human-approve|auto) ;;
-    *) die "approval rule must be 'human-approve' or 'auto', got: $APPROVAL" ;;
+    human|auto) ;;
+    *) die "approval rule must be 'human' or 'auto', got: $APPROVAL" ;;
 esac
-[ -n "$WTROOT" ] || WTROOT="$HOME/.agent-merge-train/worktrees/$(basename "$PROJECT")"
+[ -n "$WTROOT" ] || WTROOT="$HOME/.overlord-daycare/worktrees/$(basename "$PROJECT")"
 case "$WTROOT" in
     /*) : ;;
     *) die "worktree root must be an absolute path, got: $WTROOT" ;;
 esac
 
-# ---- Write .mtc/config.env ---------------------------------------------------
-mkdir -p "$MTC_DIR"
+# ---- Write .overlord/config.env ---------------------------------------------------
+mkdir -p "$OVERLORD_DIR"
 {
-    echo "# agent-merge-train configuration — written by ./init on $(now_iso)."
+    echo "# Overlord Daycare configuration — written by ./init on $(now_iso)."
     echo "# Edit by hand or re-run ./init. Sourced as shell; values single-quoted."
-    echo "# Env vars (MTC_WORKER_CMD=... bin/worker ...) override anything here."
+    echo "# Env vars (OVERLORD_WORKER_CMD=... bin/worker ...) override anything here."
     echo ""
     echo "# Target project (git repo) the train works on."
-    echo "MTC_PROJECT_DIR=$(shell_quote "$PROJECT")"
+    echo "OVERLORD_PROJECT_DIR=$(shell_quote "$PROJECT")"
     echo "# Branch tasks start from and merge into."
-    echo "MTC_BASE_BRANCH=$(shell_quote "${BASE:-main}")"
+    echo "OVERLORD_BASE_BRANCH=$(shell_quote "${BASE:-main}")"
     echo "# Test command, run from the worktree root. 'true' skips tests."
-    echo "MTC_TEST_CMD=$(shell_quote "${TESTCMD:-true}")"
+    echo "OVERLORD_TEST_CMD=$(shell_quote "${TESTCMD:-true}")"
     echo "# Worker AI: runs INSIDE the task worktree. \$PROMPT = full task brief,"
-    echo "# \$PROMPT_FILE = same as a file, \$MTC_WORKTREE = the worktree path."
-    echo "MTC_WORKER_CMD=$(shell_quote "$WORKER")"
+    echo "# \$PROMPT_FILE = same as a file, \$OVERLORD_WORKTREE = the worktree path."
+    echo "OVERLORD_WORKER_CMD=$(shell_quote "$WORKER")"
     echo "# Reviewer AI: read-only, gets the diff in \$PROMPT. Use a DIFFERENT"
     echo "# model family than the worker when you can."
-    echo "MTC_REVIEWER_CMD=$(shell_quote "$REVIEWER")"
-    echo "# human-approve: merge gate asks a human (default, recommended)."
+    echo "OVERLORD_REVIEWER_CMD=$(shell_quote "$REVIEWER")"
+    echo "# human: merge gate asks a human (default, recommended)."
     echo "# auto: merge with no prompt, only when tests pass AND review is CLEAN."
-    echo "MTC_APPROVAL_RULE=$(shell_quote "$APPROVAL")"
+    echo "OVERLORD_APPROVAL_RULE=$(shell_quote "$APPROVAL")"
     echo "# Where task worktrees live (outside both repos)."
-    echo "MTC_WORKTREE_ROOT=$(shell_quote "$WTROOT")"
+    echo "OVERLORD_WORKTREE_ROOT=$(shell_quote "$WTROOT")"
     echo "# Time bounds, seconds (no bound if 'timeout' is unavailable)."
-    echo "MTC_WORKER_TIMEOUT='1800'"
-    echo "MTC_REVIEWER_TIMEOUT='900'"
-    echo "MTC_TEST_TIMEOUT='1200'"
-} > "$MTC_CONFIG"
-info "==> wrote $MTC_CONFIG"
+    echo "OVERLORD_WORKER_TIMEOUT='1800'"
+    echo "OVERLORD_REVIEWER_TIMEOUT='900'"
+    echo "OVERLORD_TEST_TIMEOUT='1200'"
+} > "$OVERLORD_CONFIG"
+info "==> wrote $OVERLORD_CONFIG"
 
 # ---- Copy the skill and fill its placeholders (template stays untouched) -----
 sed \
-    -e "s|<<YOUR VALUES FILE>>|$MTC_DIR/VALUES.md|g" \
-    -e "s|<<YOUR HANDOFF FILE>>|$MTC_DIR/HANDOFF.md|g" \
-    -e "s|<<YOUR HEARTBEAT CHECKLIST>>|$MTC_DIR/HEARTBEAT.md|g" \
-    -e "s|<<YOUR DASHBOARD ENDPOINT>>|(optional — not configured; see HOW-WE-WORK.md §2)|g" \
+    -e "s|<<YOUR VALUES FILE>>|$OVERLORD_DIR/VALUES.md|g" \
+    -e "s|<<YOUR HANDOFF FILE>>|$OVERLORD_DIR/HANDOFF.md|g" \
+    -e "s|<<YOUR HEARTBEAT CHECKLIST>>|$OVERLORD_DIR/HEARTBEAT.md|g" \
+    -e "s|<<YOUR DASHBOARD ENDPOINT>>|(optional — not configured; starter: bin/pace on .overlord/meters.json, see docs/pacing.md)|g" \
     -e "s|<<YOUR PUSH SCRIPT>>|(optional — this kit never pushes; script it when you add CI)|g" \
-    -e "s|<<YOUR CHECKS SCRIPT>>|$MTC_KIT/bin/check-and-merge <task> (runs the tests on the task branch)|g" \
-    -e "s|<<YOUR PREFLIP REVIEW>>|$MTC_KIT/bin/review <task> (independent reviewer on the exact head)|g" \
-    -e "s|<<YOUR FLIP SCRIPT>>|(the approval + merge step inside $MTC_KIT/bin/check-and-merge)|g" \
-    -e "s|<<YOUR DEFERRED LOG>>|$MTC_DIR/DEFERRED.md|g" \
-    -e "s|<<YOUR BOARD>>|$MTC_DIR/BOARD.md|g" \
-    -e "s|<<YOUR CRITICAL LIST>>|$MTC_DIR/CRITICAL-LIST.md|g" \
-    -e "s|<<YOUR LANE LAUNCHERS>>|$MTC_KIT/bin/worker and $MTC_KIT/bin/loop|g" \
-    -e "s|<<YOUR SNAPSHOT DIR>>|$MTC_DIR/snapshots|g" \
-    "$MTC_KIT/coordinator-skill/SKILL.md" > "$MTC_DIR/SKILL.md.tmp"
+    -e "s|<<YOUR CHECKS SCRIPT>>|$OVERLORD_KIT/bin/check-and-merge <task> (runs the tests on the task branch)|g" \
+    -e "s|<<YOUR PREFLIP REVIEW>>|$OVERLORD_KIT/bin/review <task> (independent reviewer on the exact head)|g" \
+    -e "s|<<YOUR FLIP SCRIPT>>|(the approval + merge step inside $OVERLORD_KIT/bin/check-and-merge)|g" \
+    -e "s|<<YOUR DEFERRED LOG>>|$OVERLORD_DIR/DEFERRED.md|g" \
+    -e "s|<<YOUR BOARD>>|$OVERLORD_DIR/BOARD.md|g" \
+    -e "s|<<YOUR CRITICAL LIST>>|$OVERLORD_DIR/CRITICAL-LIST.md|g" \
+    -e "s|<<YOUR LANE LAUNCHERS>>|$OVERLORD_KIT/bin/worker and $OVERLORD_KIT/bin/loop|g" \
+    -e "s|<<YOUR SNAPSHOT DIR>>|$OVERLORD_DIR/snapshots|g" \
+    "$OVERLORD_KIT/coordinator-skill/SKILL.md" > "$OVERLORD_DIR/SKILL.md.tmp"
 
 awk -v note="> Copied and filled in by ./init on $(date -u '+%Y-%m-%d'). This is YOUR copy — edit it. The template lives at coordinator-skill/SKILL.md; ./init never edits the template." '
     { print }
     $0 == "---" { c++; if (c == 2 && !done) { print ""; print note; done = 1 } }
-' "$MTC_DIR/SKILL.md.tmp" > "$MTC_DIR/SKILL.md"
-rm -f "$MTC_DIR/SKILL.md.tmp"
-if grep -q '<<YOUR [A-Z]' "$MTC_DIR/SKILL.md"; then
-    warn "some <<YOUR ...>> placeholders remain in .mtc/SKILL.md — fill them by hand."
+' "$OVERLORD_DIR/SKILL.md.tmp" > "$OVERLORD_DIR/SKILL.md"
+rm -f "$OVERLORD_DIR/SKILL.md.tmp"
+if grep -q '<<YOUR [A-Z]' "$OVERLORD_DIR/SKILL.md"; then
+    warn "some <<YOUR ...>> placeholders remain in .overlord/SKILL.md — fill them by hand."
 fi
-info "==> wrote $MTC_DIR/SKILL.md (skill copy with placeholders filled)"
+info "==> wrote $OVERLORD_DIR/SKILL.md (skill copy with placeholders filled)"
 
 # ---- Starter files the skill points at (only if missing) ---------------------
-mkdir -p "$MTC_DIR/snapshots"
+mkdir -p "$OVERLORD_DIR/snapshots"
 write_if_absent() { # write_if_absent <file> <text...>
     local f="$1"; shift
     [ -e "$f" ] && return 0
@@ -278,7 +278,7 @@ write_if_absent() { # write_if_absent <file> <text...>
     info "==> wrote $f"
 }
 
-write_if_absent "$MTC_DIR/VALUES.md" <<'EOF'
+write_if_absent "$OVERLORD_DIR/VALUES.md" <<'EOF'
 # Decision values (one page)
 
 Consulted before any judgment call (HOW-WE-WORK.md §9). Edit freely.
@@ -292,7 +292,7 @@ Consulted before any judgment call (HOW-WE-WORK.md §9). Edit freely.
   would rather have less working than more broken.
 EOF
 
-write_if_absent "$MTC_DIR/CRITICAL-LIST.md" <<'EOF'
+write_if_absent "$OVERLORD_DIR/CRITICAL-LIST.md" <<'EOF'
 # Critical list — always fix before merge
 
 Anything that could: move or lose money wrongly, corrupt records, leak
@@ -301,7 +301,7 @@ user would see broken. Everything else can be deferred WITH a trigger
 (HOW-WE-WORK.md §5).
 EOF
 
-write_if_absent "$MTC_DIR/HANDOFF.md" <<'EOF'
+write_if_absent "$OVERLORD_DIR/HANDOFF.md" <<'EOF'
 # Handoff — live state
 
 Rewritten by the coordinator whenever anything changes; read first on any
@@ -312,21 +312,21 @@ restart. Keep it short enough to actually re-read (HOW-WE-WORK.md §7).
 - **Needs the owner:** (nothing / ...)
 EOF
 
-write_if_absent "$MTC_DIR/HEARTBEAT.md" <<'EOF'
+write_if_absent "$OVERLORD_DIR/HEARTBEAT.md" <<'EOF'
 # Heartbeat checklist
 
 The only place heartbeat behavior lives; the scheduled prompt just points
 here (HOW-WE-WORK.md §6). A ~30-minute scheduler prompt can be simply:
 
-    Read .mtc/HEARTBEAT.md and do what it says.
+    Read .overlord/HEARTBEAT.md and do what it says.
 
 - [ ] bin/status — act on every warning
 - [ ] Anything to merge? (tests + review clean → merge gate)
 - [ ] New tasks to start? (bin/worker / bin/loop)
-- [ ] Update .mtc/HANDOFF.md if anything changed
+- [ ] Update .overlord/HANDOFF.md if anything changed
 EOF
 
-write_if_absent "$MTC_DIR/DEFERRED.md" <<'EOF'
+write_if_absent "$OVERLORD_DIR/DEFERRED.md" <<'EOF'
 # Deferred findings
 
 A deferral without a trigger is a deletion with extra steps (HOW-WE-WORK.md
@@ -335,7 +335,7 @@ A deferral without a trigger is a deletion with extra steps (HOW-WE-WORK.md
 - YYYY-MM-DD <area> — <what> — <what event triggers picking it up>
 EOF
 
-write_if_absent "$MTC_DIR/BOARD.md" <<'EOF'
+write_if_absent "$OVERLORD_DIR/BOARD.md" <<'EOF'
 # Board
 
 Glanceable at the top; one row per open change (HOW-WE-WORK.md §8).
@@ -369,5 +369,5 @@ else
     info "First loop on your project — write a small task file, then:"
     info "  bin/loop my-first-task path/to/task.md"
     info "Step by step instead: bin/worker, bin/review, bin/check-and-merge."
-    info "The coordinator's operating manual is at .mtc/SKILL.md (yours to edit)."
+    info "The coordinator's operating manual is at .overlord/SKILL.md (yours to edit)."
 fi

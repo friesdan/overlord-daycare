@@ -1,0 +1,100 @@
+# The reference pacing engine
+
+`pacing/pace.mjs` is a dependency-free (Node ≥ 20, ESM) engine that turns a
+meters file into lane advice: one line per pool with its pace and how many
+agent lanes it may run right now, plus the reason. Numbers in, advice out —
+it never fetches anything. The design and the *why* behind every rule live in
+[`docs/pacing.md`](../docs/pacing.md); start there.
+
+```bash
+node pacing/pace.mjs                      # or: bin/pace (from the kit root)
+node pacing/pace.mjs my-meters.json       # your own meters
+node pacing/pace.mjs my-meters.json --json  # for a coordinator agent
+node --test pacing/                       # unit tests
+```
+
+## The meters file
+
+A JSON document: an optional pinned `now` (ISO 8601; omit it to use the wall
+clock — pin it in scripts and tests for reproducible output), an optional
+`hostMaxLanes` (how many lanes the machine can actually run), and `pools`:
+
+```json
+{
+  "now": "2026-11-14T12:00:00Z",
+  "hostMaxLanes": 6,
+  "pools": [
+    {
+      "name": "worker-weekly",
+      "note": "any text — this field is ignored",
+      "meter": { "usedPercent": 40 },
+      "windowStart": "2026-11-09T12:00:00Z",
+      "windowEnd": "2026-11-16T12:00:00Z",
+      "burnPerLaneHour": 4,
+      "burnSource": "measured",
+      "maxLanes": 4,
+      "reservePercent": 25,
+      "reserveFor": "code reviews",
+      "mode": "even",
+      "exhaustedConfirmed": false
+    }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Pool name. Name it after the **route**, not the model — the same model through two products is two pools with two meters. |
+| `meter` | yes | `{ "usedPercent": 40 }` — the pool's usage meter. `null` or a non-numeric/out-of-range `%` reads as **unknown** → 0 lanes. |
+| `windowStart` / `windowEnd` | yes | The reset window, ISO 8601. Both are needed (pace compares used % against elapsed %). A window that already ended reads as unknown — read the meter again. |
+| `burnPerLaneHour` | for lanes | Points of the window one lane burns per hour (a weekly pool at 4 means one lane empties it in 25 lane-hours). Missing/≤ 0 → 0 lanes until you calibrate. |
+| `burnSource` | no | `"measured"` or `"assumed"` — a label so advice never mistakes a guess for a number. |
+| `maxLanes` | no | The pool's own cap (small plans, owner fiat). |
+| `reservePercent` / `reserveFor` | no | Hold this many points of the window for a named purpose (reviews, migrations). Uncoverable reserve → 0 lanes. |
+| `mode` | no | Owner toggle: `even` (default), `burn-harder` (reserve released, over-pace gate off), `paused` (0 lanes). |
+| `exhaustedConfirmed` | no | `true` = a real rate limit was observed — a fact that beats the meter, cleared only by the window resetting or the owner. |
+
+`pacing/meters.example.json` is a fully synthetic working example covering
+every state (behind, hot, unknown, even, paused, reserved).
+
+## Feeding it real meters
+
+1. **Pick your pools.** One pool per metered route. If two products meter the
+   same model separately, they are two entries — never merge meters.
+2. **Get `usedPercent` and the window honestly.** Use the provider's official
+   usage API with your own key, or a file you export yourself from their usage
+   page. **Do not scrape provider pages and do not reuse another tool's login
+   tokens — that may break the provider's terms of service**, and those
+   integrations leak tokens into logs. A pool you can't read honestly stays
+   `meter: null` (0 lanes is the safe answer, not a guess).
+3. **Estimate `burnPerLaneHour`, then measure it.** Start with a conservative
+   assumption and label it `"assumed"`. Once real lanes have run:
+   `observed = Δused% ÷ (lanes × hours)` over an interval where you know how
+   many lanes ran. Swap the number in, flip the label to `"measured"`, and log
+   the assumed-vs-observed gap with the date — that log is what tells you
+   which pools still run on guesses. (A daily habit: re-check any pool whose
+   advice "feels" wrong; it is usually the burn number.)
+4. **Set reserves you mean.** A slice held for reviews only helps if it is
+   actually held when lanes are hungry. Name the purpose so the reason line
+   explains itself.
+5. **Keep the file out of the repo.** Real meters are your spending patterns
+   — keep them local (`.overlord/meters.json` is git-ignored) and keep real
+   plan prices out of anything shared. `pacing/meters.example.json` stays
+   synthetic on purpose.
+6. **Record resets.** When a window ends, append one row per pool to a
+   reset-waste ledger (pool, window end, kind, used % at last reading,
+   left-over %, staleness, lane-hours). Three months of "this plan expired
+   59% unused" is how plan decisions stop being vibes.
+
+## Output
+
+The table (default) shows pool, band (`even` / `behind` / `hot` / `early` /
+`unknown` / `exhausted` / `empty` / `paused`), pace ratio, used/elapsed,
+left/spendable, lanes, and the one-line reason. `--json` returns the same data
+as an object: `generatedAt`, `hostMaxLanes`, `totalAdvisedLanes`, a `note`
+when the advised total exceeds host capacity, and `pools[]` with every input
+echoed alongside the advice, so a consumer can check the arithmetic rather
+than trust it.
+
+Exit codes: `0` advice produced, `1` unreadable file or bad usage. Per-pool
+failures never fail the run — they fail closed to 0 lanes with a reason.

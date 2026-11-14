@@ -25,6 +25,8 @@ Why: allowances reset on a clock. Too slow wastes allowance at reset; too fast r
 
 Two supporting habits: periodically compare assumed cost per lane-hour with observed burn from real runs and log the gap (measuring turns a guess into a number); and keep a durable ledger of what each reset left unused, so plan decisions become evidence-based.
 
+This package ships a written design guide ([`docs/pacing.md`](docs/pacing.md)) and a tiny dependency-free reference engine ([`pacing/`](pacing/), wrapped as `bin/pace`) that turns a meters file into exactly that one answer per pool — a starting point to grow into a live dashboard, not a requirement for running the starter loop.
+
 ## 3. Choosing model and effort per task
 
 Pick the cheapest model that is adequate, and set effort explicitly on every launch:
@@ -50,7 +52,7 @@ Keep a simple outcome ledger (task type, model, effort, accepted or not), review
 4. **Fix-versus-defer triage.** Judge every finding by real harm (next section), not the reviewer's label.
 5. **One ready change at a time.** Exactly one change occupies the merge lane; the lane is never held empty for a favorite — priority orders changes that are already clean. Why: serialized merges make every failure attributable to one change.
 6. **External review as backstop.** An outside bot reads the ready change cold. A perfect score merges; anything less is judged — fix, merge with the finding logged, or hold only that change. Why: the backstop proves you already did it right; if it keeps finding real problems, fix your earlier stages at the design level instead of paying for repeated external reviews.
-7. **Merge, then ship.** Merge on green checks with threads answered. Apply migrations, verify new schema is actually usable by the application (fresh tables often need explicit access grants), and deploy, grouping changes that landed together.
+7. **Merge, then ship.** Merge on green checks with threads answered. Apply migrations, verify new schema is actually usable by the application (fresh tables often need explicit access grants), and deploy, grouping changes that landed together. Merging is not necessarily human: **the human sets the rules and the gates; the coordinator may merge on its own once you trust those gates** — start with every merge approved by hand, and hand over the merge button only when the gates have proven they catch what you would have caught.
 
 **Spiral rule:** the same class of finding in roughly three consecutive rounds means stop patching sites — fix the underlying design once (one shared rule, helper, or test) or cut that scope. After a handful of total rounds on one change, decide explicitly: finish, split, or defer the rest, and tell the owner in one line.
 
@@ -133,7 +135,7 @@ Build in this order, growing each piece only when its absence has actually hurt:
 5. **Handoff file and heartbeat** — one live-state file, plus a thirty-minute scheduled prompt that only points at a checklist. Update the handoff every heartbeat from day one.
 6. **Two compaction hooks** — pre-compaction snapshot, post-compaction re-injection. Cheap, and they pay off at the first survived summary.
 7. **Status board** — start with one row per open change (origin, next step); add program progress files at the first multi-change effort and the Decisions tab when chat questions deserve a permanent home.
-8. **Usage dashboard** — last, because it needs lane history to calibrate. Start with a simple pace readout per pool; add lane advice once a lane-hour's cost is measured. Until then, cap concurrency by hand and keep numbers honest.
+8. **Usage dashboard** — last, because it needs lane history to calibrate. Start with a simple pace readout per pool; add lane advice once a lane-hour's cost is measured. Until then, cap concurrency by hand and keep numbers honest. [`docs/pacing.md`](docs/pacing.md) is the design guide and [`pacing/`](pacing/) a reference engine to start from.
 
 The method is the shape — coordinator, lanes, independent review, written values, a heartbeat, and a handoff — not any particular script.
 

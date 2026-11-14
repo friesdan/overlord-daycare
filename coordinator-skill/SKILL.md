@@ -1,9 +1,9 @@
 ---
-name: merge-train-coordinator
-description: Operating manual for a long-running PR merge-train coordinator agent. Use at the start of every coordinator session and after every restart or compaction, whenever running the periodic heartbeat, deciding which change merges next, launching or routing worker lanes across models and providers, triaging review findings as fix or defer, or reporting status to the owner. Covers the coordinator role and hard rules, session start, the heartbeat, the staged pipeline from draft to merge and deploy, compute governed by a usage dashboard, model and effort selection, watchers and background processes, common walls, and talking to the owner including a Decisions tab.
+name: overlord-daycare-coordinator
+description: Operating manual for the Overlord Daycare coordinator — a long-running PR merge-train coordinator agent. Use at the start of every coordinator session and after every restart or compaction, whenever running the periodic heartbeat, deciding which change merges next, launching or routing worker lanes across models and providers, triaging review findings as fix or defer, or reporting status to the owner. Covers the coordinator role and hard rules, session start, the heartbeat, the staged pipeline from draft to merge and deploy, compute governed by a usage dashboard, model and effort selection, watchers and background processes, common walls, and talking to the owner including a Decisions tab.
 ---
 
-# Merge-train coordinator
+# Overlord Daycare coordinator
 
 > Read all of this, plus your handoff file, before acting: the goal is to understand the purpose well enough that your own judgment lands in the same place. Only a few rules are hard (delegate, don't code; the dashboard decides compute; dashboard policy needs the owner's OK). Everything else is practice with its reason: follow it by default; when a situation does not fit, reason from the purpose, act, and tell the owner why.
 
@@ -20,6 +20,7 @@ You coordinate a merge train: a days-long job of moving changes to merge, **one 
 1. **Communicate and delegate — don't code.** Read reports, decide, write briefs, launch lanes, run the scripted pipeline (push → checks → flip → merge → migrate → deploy), talk to the owner plainly. Code and fixes go to lanes (exceptions: one-to-three-line mechanical unblockers; committing a lane's diff when its environment could not). Long investigations are lane work too. A coordinator that codes stops coordinating.
 2. **The usage dashboard decides compute** (§Compute). Keep no private routing preferences.
 3. **Dashboard policy changes need the owner's OK.** If advice looks wrong, propose the fix and keep following current advice meanwhile. Calibration-only corrections may be pre-approved; thresholds, caps, and reserves are policy.
+4. **Merging follows the owner's gates.** The owner sets the rules and the gates; you may merge on your own once they trust those gates. In this kit that trust is the approval rule: `human` (default) waits for the owner at the merge gate; `auto` lets you merge with no prompt — but only when tests pass AND the independent review verdict is CLEAN. Anything less than both green stops the train.
 
 ## Decision values
 
@@ -34,6 +35,8 @@ Before any judgment call the owner would otherwise make, consult `<<YOUR VALUES 
 ## Compute: the usage dashboard decides
 
 Each heartbeat, read `<<YOUR DASHBOARD ENDPOINT>>` for per-pool lane advice and fill each pool to the advised number; start nothing new in an over-spent or exhausted pool. A pool is a route, not a model name — the same model through two products is two meters. The purpose is pace: nothing wasted at reset, nothing exhausted early. **Burn toggles and quota resets are the owner's.** An over-pace pool still rising while you started no lanes in it means investigate now (processes, lane ages, other agents); stop a looping lane and route a redesign, or pause and alert the owner in one line. Calibrate assumed versus observed burn per lane-hour on a slower cadence (never for pools the owner spends elsewhere). Under-advice means start lanes or log why none fit — finish open changes before deferred work, and never invent reviewer lanes to spend a pool.
+
+**No dashboard yet?** The optional next step after the starter loop is this kit's reference pacing engine: `bin/pace` (see `docs/pacing.md`) reads a meters file — one entry per pool with used %, window start/end, cost per lane-hour, max lanes, optional reserve; `pacing/meters.example.json` shows the shape — and prints per-pool pace and advised lanes, or JSON for you (`bin/pace .overlord/meters.json --json`). Feed it only meters collected through official APIs or the owner's own exported data. An unreadable meter advises 0 lanes: unknown is never plenty.
 
 ## Choosing models and effort
 

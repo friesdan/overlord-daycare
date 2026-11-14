@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/status — show the merge-train state (STATE.md) plus a liveness check of
+# bin/status — show the train state (STATE.md) plus a liveness check of
 # every open task: does its branch still exist, does its worktree still exist?
 # Read this after a restart to resume where you left off.
 set -u
@@ -20,24 +20,24 @@ EOF
 [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && { usage; exit 0; }
 [ $# -eq 0 ] || { usage >&2; exit 1; }
 
-if [ ! -f "$MTC_STATE" ]; then
-    info "no $MTC_STATE yet — no tasks have been run."
+if [ ! -f "$OVERLORD_STATE" ]; then
+    info "no $OVERLORD_STATE yet — no tasks have been run."
     info "start with: ./init --demo && bin/loop demo examples/demo-task.md"
     exit 0
 fi
 
-if [ -f "$MTC_CONFIG" ]; then
+if [ -f "$OVERLORD_CONFIG" ]; then
     # shellcheck disable=SC1090
-    . "$MTC_CONFIG"
-    info "project : ${MTC_PROJECT_DIR:-?}  (base: ${MTC_BASE_BRANCH:-?})"
-    info "approval: ${MTC_APPROVAL_RULE:-human-approve}"
+    . "$OVERLORD_CONFIG"
+    info "project : ${OVERLORD_PROJECT_DIR:-?}  (base: ${OVERLORD_BASE_BRANCH:-?})"
+    info "approval: ${OVERLORD_APPROVAL_RULE:-human}"
     echo
 else
     info "project : (not configured — run ./init)"
     echo
 fi
 
-tasks="$(awk '/^## / { sub(/^## */, ""); print }' "$MTC_STATE")"
+tasks="$(awk '/^## / { sub(/^## */, ""); print }' "$OVERLORD_STATE")"
 [ -n "$tasks" ] || { info "STATE.md has no tasks yet."; exit 0; }
 
 for task in $tasks; do
@@ -58,11 +58,11 @@ for task in $tasks; do
 
     # liveness (only meaningful while the task is open)
     if [ "${status:-}" = "open" ] || [ "${status:-}" = "" ]; then
-        if [ -n "$branch" ] && [ -n "${MTC_PROJECT_DIR:-}" ]; then
-            if git -C "$MTC_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
+        if [ -n "$branch" ] && [ -n "${OVERLORD_PROJECT_DIR:-}" ]; then
+            if git -C "$OVERLORD_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
                 :
             else
-                warn "   branch $branch is gone from ${MTC_PROJECT_DIR:-the project}"
+                warn "   branch $branch is gone from ${OVERLORD_PROJECT_DIR:-the project}"
             fi
         fi
         case "$worktree" in
@@ -74,4 +74,4 @@ for task in $tasks; do
 done
 
 info "(this is STATE.md, maintained by the bin/* scripts — a coordinator agent"
-info " resumes from it after a restart; full file: $MTC_STATE)"
+info " resumes from it after a restart; full file: $OVERLORD_STATE)"

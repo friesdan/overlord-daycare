@@ -1,4 +1,4 @@
-"""Tiny calculator used by the agent-merge-train demo project."""
+"""Tiny calculator used by the Overlord Daycare demo project."""
 
 
 def add(a, b):

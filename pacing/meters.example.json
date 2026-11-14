@@ -1,0 +1,69 @@
+{
+  "now": "2026-11-14T12:00:00Z",
+  "hostMaxLanes": 6,
+  "pools": [
+    {
+      "name": "worker-weekly",
+      "note": "mid-tier coding model on a weekly plan (synthetic example numbers)",
+      "meter": { "usedPercent": 40 },
+      "windowStart": "2026-11-09T12:00:00Z",
+      "windowEnd": "2026-11-16T12:00:00Z",
+      "burnPerLaneHour": 4,
+      "burnSource": "measured",
+      "maxLanes": 4
+    },
+    {
+      "name": "review-weekly",
+      "note": "strong reviewer model, weekly plan — a slice held for reviews",
+      "meter": { "usedPercent": 40 },
+      "windowStart": "2026-11-09T12:00:00Z",
+      "windowEnd": "2026-11-16T12:00:00Z",
+      "burnPerLaneHour": 2,
+      "burnSource": "measured",
+      "maxLanes": 3,
+      "reservePercent": 25,
+      "reserveFor": "code reviews"
+    },
+    {
+      "name": "nightly-5h",
+      "note": "small plan on a 5-hour window — currently burning hot",
+      "meter": { "usedPercent": 55 },
+      "windowStart": "2026-11-14T10:00:00Z",
+      "windowEnd": "2026-11-14T15:00:00Z",
+      "burnPerLaneHour": 20,
+      "burnSource": "assumed",
+      "maxLanes": 1
+    },
+    {
+      "name": "scout-daily",
+      "note": "cheap model on a daily plan — collector not wired up yet",
+      "meter": null,
+      "windowStart": "2026-11-14T00:00:00Z",
+      "windowEnd": "2026-11-15T00:00:00Z",
+      "burnPerLaneHour": 8,
+      "burnSource": "assumed",
+      "maxLanes": 2
+    },
+    {
+      "name": "sandbox-monthly",
+      "note": "monthly sandbox plan, roughly on pace",
+      "meter": { "usedPercent": 44 },
+      "windowStart": "2026-11-01T00:00:00Z",
+      "windowEnd": "2026-12-01T00:00:00Z",
+      "burnPerLaneHour": 1,
+      "burnSource": "assumed",
+      "maxLanes": 3
+    },
+    {
+      "name": "demo-credits",
+      "note": "free credits the owner paused while evaluating them",
+      "meter": { "usedPercent": 10 },
+      "windowStart": "2026-11-01T00:00:00Z",
+      "windowEnd": "2026-12-01T00:00:00Z",
+      "burnPerLaneHour": 1,
+      "burnSource": "assumed",
+      "maxLanes": 2,
+      "mode": "paused"
+    }
+  ]
+}

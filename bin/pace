@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# bin/pace [meters.json] [--json] — per-pool pace and advised lanes.
+#
+# Wraps pacing/pace.mjs (Node >= 20, no dependencies). Default meters file is
+# pacing/meters.example.json — SYNTHETIC numbers, safe to run anywhere. Feed it
+# your own meters (same shape) to get real advice; see docs/pacing.md for the
+# design and pacing/README.md for the schema. Collect real meters only through
+# official APIs or your own exported data.
+set -u
+# shellcheck disable=SC1091  # path is relative to this script
+
+KIT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if ! command -v node >/dev/null 2>&1; then
+    printf 'error: node (>= 20) is required for bin/pace — not found on PATH\n' >&2
+    exit 1
+fi
+node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if [ "${node_major:-0}" -lt 20 ]; then
+    printf 'error: bin/pace needs node >= 20 (found %s)\n' "$(node --version)" >&2
+    exit 1
+fi
+
+exec node "$KIT/pacing/pace.mjs" "$@"

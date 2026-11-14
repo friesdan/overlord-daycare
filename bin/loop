@@ -44,21 +44,21 @@ valid_task_name "$task" || die "invalid task name '$task'"
 load_config
 
 info "=== loop: $task — worker -> review -> merge gate ==="
-info "    project: $MTC_PROJECT_DIR (base: $MTC_BASE_BRANCH)"
+info "    project: $OVERLORD_PROJECT_DIR (base: $OVERLORD_BASE_BRANCH)"
 
-if ! "$MTC_KIT/bin/worker" "$task" "$task_file"; then
-    die "loop stopped: worker step failed for '$task' (see .mtc/runs/$task/worker.log)"
+if ! "$OVERLORD_KIT/bin/worker" "$task" "$task_file"; then
+    die "loop stopped: worker step failed for '$task' (see .overlord/runs/$task/worker.log)"
 fi
 
 review_rc=0
-"$MTC_KIT/bin/review" "$task" || review_rc=$?
+"$OVERLORD_KIT/bin/review" "$task" || review_rc=$?
 if [ "$review_rc" -eq 1 ]; then
-    die "loop stopped: review step errored for '$task' (see .mtc/runs/$task/review.md)"
+    die "loop stopped: review step errored for '$task' (see .overlord/runs/$task/review.md)"
 fi
 # rc 2 = FINDINGS: proceed to the gate — the human (or the auto rule) judges.
 
 if [ "$yes_flag" -eq 1 ]; then
-    "$MTC_KIT/bin/check-and-merge" --yes "$task"
+    "$OVERLORD_KIT/bin/check-and-merge" --yes "$task"
 else
-    "$MTC_KIT/bin/check-and-merge" "$task"
+    "$OVERLORD_KIT/bin/check-and-merge" "$task"
 fi

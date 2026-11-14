@@ -1,5 +1,5 @@
 # Local state written by ./init and the bin/* scripts — never commit it.
-.mtc/
+.overlord/
 STATE.md
 
 # OS noise

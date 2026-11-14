@@ -2,7 +2,7 @@
 # bin/review <task-name>
 #
 # Run the configured reviewer command on git diff <base>...mt/<task> with a
-# standard review prompt, and save the output to .mtc/runs/<task>/review.md.
+# standard review prompt, and save the output to .overlord/runs/<task>/review.md.
 # The reviewer must end with a final line "VERDICT: CLEAN" or
 # "VERDICT: FINDINGS". Updates STATE.md.
 set -u -o pipefail
@@ -15,7 +15,7 @@ usage() {
 usage: bin/review <task-name>
 
 Run the reviewer AI command on the full diff base...mt/<task-name> and save
-its output to .mtc/runs/<task-name>/review.md.
+its output to .overlord/runs/<task-name>/review.md.
 
 The reviewer should be a DIFFERENT model/CLI than the worker — an independent
 reviewer catches blind spots the builder shares (HOW-WE-WORK.md §1).
@@ -36,23 +36,23 @@ load_config
 
 branch="$(task_branch "$task")"
 run_dir="$(task_run_dir "$task")"
-git -C "$MTC_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch" || \
-    die "branch $branch not found in $MTC_PROJECT_DIR — run bin/worker $task first"
+git -C "$OVERLORD_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch" || \
+    die "branch $branch not found in $OVERLORD_PROJECT_DIR — run bin/worker $task first"
 
 mkdir -p "$run_dir"
 
 diff_file="$run_dir/review.diff"
-git -C "$MTC_PROJECT_DIR" diff "$MTC_BASE_BRANCH...$branch" > "$diff_file"
+git -C "$OVERLORD_PROJECT_DIR" diff "$OVERLORD_BASE_BRANCH...$branch" > "$diff_file"
 [ -s "$diff_file" ] || die "diff base...$branch is empty — nothing to review.
-Did the worker commit anything? (.mtc/runs/$task/worker.log)"
+Did the worker commit anything? (.overlord/runs/$task/worker.log)"
 
-commit="$(git -C "$MTC_PROJECT_DIR" rev-parse "$branch")"
+commit="$(git -C "$OVERLORD_PROJECT_DIR" rev-parse "$branch")"
 
 {
     cat <<EOF
 # Independent code review
 
-Review ONLY the diff below (base branch $MTC_BASE_BRANCH -> branch $branch,
+Review ONLY the diff below (base branch $OVERLORD_BASE_BRANCH -> branch $branch,
 head commit $commit). You are the reviewer, not the author: assume nothing
 about intent; check what the change actually does.
 
@@ -78,13 +78,13 @@ EOF
 PROMPT="$(cat "$run_dir/review-prompt.md")"
 export PROMPT
 export PROMPT_FILE="$run_dir/review-prompt.md"
-export MTC_WORKTREE="$MTC_PROJECT_DIR"
-export MTC_TASK="$task"
+export OVERLORD_WORKTREE="$OVERLORD_PROJECT_DIR"
+export OVERLORD_TASK="$task"
 
-info "==> running reviewer on $branch ($commit): $MTC_REVIEWER_CMD"
-info "    (output: $run_dir/review.md; timeout: ${MTC_REVIEWER_TIMEOUT}s)"
+info "==> running reviewer on $branch ($commit): $OVERLORD_REVIEWER_CMD"
+info "    (output: $run_dir/review.md; timeout: ${OVERLORD_REVIEWER_TIMEOUT}s)"
 rc=0
-( cd "$MTC_PROJECT_DIR" && run_bounded "$MTC_REVIEWER_TIMEOUT" "$MTC_REVIEWER_CMD" ) \
+( cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_REVIEWER_TIMEOUT" "$OVERLORD_REVIEWER_CMD" ) \
     2>&1 | tee "$run_dir/review.md" || rc=$?
 
 state_set "$task" last_step "review"
