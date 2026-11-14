@@ -2,9 +2,10 @@
 
 <img src="../assets/the-floor.jpg" alt="The operations floor, where the coordinator watches pacing across every AI subscription" width="720">
 
-Pacing is the secret sauce: a small dashboard tells the coordinator how many
-agents each AI subscription can run right now, so every plan is spent evenly —
-nothing sits unused at reset, nothing runs dry early.
+You pay for several AI subscriptions, each with its own limits and its own
+reset clock. Pacing is the secret sauce: a small dashboard tells the
+coordinator how many agents each subscription can run right now, so every
+plan is spent evenly — nothing sits unused at reset, nothing runs dry early.
 
 This guide explains how to build one, and *why* each piece is shaped the way it
 is. It ships with a tiny reference engine ([`pacing/pace.mjs`](../pacing/pace.mjs),

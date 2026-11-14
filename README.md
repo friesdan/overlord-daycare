@@ -2,11 +2,11 @@
 
 <img src="assets/hero.jpg" alt="A person in a bathrobe with coffee peeks from a cozy kitchen into a smoky robot control floor run by a crowned robot" width="720">
 
-> The robots do run things. I just set the rules once and pop in with coffee.
+> One overlord for all your AI plans.
 
 Website: https://overlord-daycare.danfries.us
 
-I set the rules once, and now the robots run the daycare. I just talk in plain words about what I want built, and the overlord plans it, hands it to its sub-overlords to build and check with a different model, and merges it when it is ready. It spreads the work out evenly so nothing I pay for sits unused or runs dry early, and it never wastes effort just to look busy while I am away. I can pop in from the couch or a trail to see what happened, and if something truly needs me it simply waits while everything else keeps moving. I am not the manager anymore — I am just the human with the coffee, checking in on a daycare that runs itself.
+You pay for several AI subscriptions. Each has its own app, its own limits, its own reset clock. Some run out mid-week; others reset with allowance unused. Overlord Daycare gives you one place to talk to: a head overlord (a coordinator agent) that dispatches work to sub-overlords across every plan you pay for, paces each plan so it is spent evenly before reset, has a different model review every change, and merges when your gates pass. You set the rules once and check in whenever you like.
 
 ## What's in the kit
 
@@ -18,9 +18,11 @@ One command runs the whole loop. It implements the method described in
 the runnable, minimal version: sensible defaults, everything else optional.
 Plain bash; needs only git and bash (python3 for the demo; jq not required).
 
-Pacing is the secret sauce: a small dashboard tells the coordinator how many
-agents each AI subscription can run right now, so every plan is spent evenly —
-nothing sits unused at reset, nothing runs dry early. The design guide is
+The kit is built for the multi-plan reality: you pay for several AI
+subscriptions, each with its own limits and its own reset clock. Pacing is the
+secret sauce: a small dashboard tells the coordinator how many agents each
+subscription can run right now, so every plan is spent evenly — nothing sits
+unused at reset, nothing runs dry early. The design guide is
 [`docs/pacing.md`](docs/pacing.md) and the kit ships a tiny reference engine
 (`bin/pace`, below).
 

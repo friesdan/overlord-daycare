@@ -27,6 +27,14 @@ Two supporting habits: periodically compare assumed cost per lane-hour with obse
 
 This package ships a written design guide ([`docs/pacing.md`](docs/pacing.md)) and a tiny dependency-free reference engine ([`pacing/`](pacing/), wrapped as `bin/pace`) that turns a meters file into exactly that one answer per pool — a starting point to grow into a live dashboard, not a requirement for running the starter loop.
 
+## The head overlord: which model and what effort
+
+- **Model:** run the head overlord on the strongest model you have — we recommend **Claude Opus 5.5** in Claude Code. The coordinator makes the judgment calls (scope, fix versus defer, routing, triage), so a weak coordinator wastes far more than it saves. Keep it out of bulk editing: it writes briefs, not code.
+- **Effort:** high by default. **xhigh/max** only for a genuinely hard judgment call — a design decision, a review spiral, a postmortem — and never for routine heartbeats: higher effort costs tokens on every wake.
+- **Sub-overlords:** effort per the task table below — cheap models at high effort for narrow, fully specified fixes; mid-tier at default for standard work; strong models at high for hard builds; max only for retries or judgment-only reviews. Always set effort explicitly on every launch.
+
+Why: follow the model provider's guidance — start at the recommended level and raise effort only where it measurably helps. Re-check when new models ship, and keep the outcome ledger.
+
 ## 3. Choosing model and effort per task
 
 Pick the cheapest model that is adequate, and set effort explicitly on every launch:
