@@ -1,10 +1,14 @@
 # Overlord Daycare
 
-<img src="assets/hero.jpg" alt="A supervisor watching over a room of busy AI coding agents at work" width="720">
+<img src="assets/hero.jpg" alt="A person in a bathrobe with coffee peeks from a cozy kitchen into a smoky robot control floor run by a crowned robot" width="720">
 
-> The AIs think they run things. You're the babysitter.
+> The robots do run things. I just set the rules once and pop in with coffee.
 
 Website: https://overlord-daycare.danfries.us
+
+I set the rules once, and now the robots run the daycare. I just talk in plain words about what I want built, and the overlord plans it, hands it to its sub-overlords to build and check with a different model, and merges it when it is ready. It spreads the work out evenly so nothing I pay for sits unused or runs dry early, and it never wastes effort just to look busy while I am away. I can pop in from the couch or a trail to see what happened, and if something truly needs me it simply waits while everything else keeps moving. I am not the manager anymore — I am just the human with the coffee, checking in on a daycare that runs itself.
+
+## What's in the kit
 
 A small open-source starter kit for supervised AI coding: you (or a coordinator
 agent) hand a task to a **worker** AI, which fixes it in an isolated git
