@@ -124,7 +124,10 @@ if [ "$DEMO" -eq 1 ]; then
     command -v python3 >/dev/null 2>&1 || \
         die "the demo needs python3 on PATH (stdlib only, nothing to install)"
 
-    if [ "$HAVE_CLAUDE" -eq 1 ] && [ "$HAVE_CODEX" -eq 1 ]; then
+    if [ -n "${OVERLORD_WORKER_CMD:-}" ] && [ -n "${OVERLORD_REVIEWER_CMD:-}" ]; then
+        WORKER="$OVERLORD_WORKER_CMD"; REVIEWER="$OVERLORD_REVIEWER_CMD"
+        info "using worker/reviewer commands from the environment (no AI CLI detection)"
+    elif [ "$HAVE_CLAUDE" -eq 1 ] && [ "$HAVE_CODEX" -eq 1 ]; then
         WORKER="$CLAUDE_WORKER"; REVIEWER="$CODEX_REVIEWER"
     elif [ "$HAVE_CLAUDE" -eq 1 ]; then
         WORKER="$CLAUDE_WORKER"; REVIEWER="$CLAUDE_REVIEWER"

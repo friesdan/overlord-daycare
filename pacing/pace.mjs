@@ -31,7 +31,7 @@
  * pace.test.mjs.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import process from "node:process";
 
@@ -382,5 +382,10 @@ function main(argv) {
 }
 
 // Run as a CLI only when executed directly (not when imported by the tests).
-const invoked = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// realpath both sides: argv[1] keeps symlinks (e.g. /tmp on macOS) while
+// import.meta.url is already resolved, so a raw comparison can miss and the
+// CLI would exit 0 with no output at all.
+let invokedAs = null;
+try { invokedAs = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : null; } catch { invokedAs = null; }
+const invoked = invokedAs !== null && import.meta.url === invokedAs;
 if (invoked) process.exit(main(process.argv.slice(2)));

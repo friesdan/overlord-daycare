@@ -1,8 +1,10 @@
 # Overlord Daycare
 
-![Overlord Daycare](assets/hero.png)
+<img src="assets/hero.jpg" alt="A supervisor watching over a room of busy AI coding agents at work" width="720">
 
 > The AIs think they run things. You're the babysitter.
+
+Website: https://overlord-daycare.danfries.us
 
 A small open-source starter kit for supervised AI coding: you (or a coordinator
 agent) hand a task to a **worker** AI, which fixes it in an isolated git
@@ -20,9 +22,17 @@ nothing sits unused at reset, nothing runs dry early. The design guide is
 
 ## First loop in 10 minutes
 
+<img src="assets/coordinator.jpg" alt="The coordinator at work, directing several AI coding lanes from a single desk" width="640">
+
 Prerequisites: `git`, `bash`, `python3`, and one AI coding CLI on your PATH —
 `claude` and/or `codex` (optional for the demo: with neither installed it runs
-on dumb stub commands, so you can see the machinery first).
+on dumb stub commands, so you can see the machinery first). Already have a CLI
+installed but want the free stub run first? Force it:
+
+```bash
+OVERLORD_WORKER_CMD="\"$PWD/examples/stubs/fix-demo-worker.sh\"" \
+OVERLORD_REVIEWER_CMD="\"$PWD/examples/stubs/clean-reviewer.sh\"" ./init --demo
+```
 
 ```bash
 ./init --demo                # configures the built-in demo project
@@ -50,7 +60,11 @@ You will see, in order:
    ```
 
 5. answer `y` → the branch merges into `main`, the worktree is removed, and
-   nothing is ever pushed. Answer anything else → everything is left in place.
+   nothing is ever pushed. Answer anything else → everything is left in place;
+   run `bin/check-and-merge demo` later to pick up at the merge gate
+   (`bin/status` always shows the next step). Without a terminal (a pipe, a
+   script) the gate treats the answer as "no" — approve with
+   `bin/loop demo examples/demo-task.md --yes` instead.
 
 `bin/status` shows where every task is (branch, last step, next step) from
 `STATE.md`; `./init --demo && bin/loop demo examples/demo-task.md --yes` runs
@@ -116,6 +130,13 @@ Neither mode ever pushes — pushing stays a human (or your explicit CI)
 decision.
 
 ### STATE.md: resuming after a restart
+
+<table>
+  <tr>
+    <td><img src="assets/peek-laptop.jpg" alt="Checking task status on a laptop to see where the train is" width="360"></td>
+    <td><img src="assets/hike-phone.jpg" alt="Checking task status from a phone while out on a hike" width="360"></td>
+  </tr>
+</table>
 
 Every script updates `STATE.md` (task → status, branch, worktree, last step,
 next step). After any restart — yours or an agent's — `bin/status` (or just

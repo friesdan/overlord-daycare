@@ -47,7 +47,10 @@ run_dir="$(task_run_dir "$task")"
 [ -e "$worktree" ] && die "worktree already exists: $worktree
 If the task is finished, merge it (bin/check-and-merge $task) or clean up:
   git -C \"$OVERLORD_PROJECT_DIR\" worktree remove --force \"$worktree\"
-  git -C \"$OVERLORD_PROJECT_DIR\" branch -D \"$branch\""
+  git -C \"$OVERLORD_PROJECT_DIR\" branch -D \"$branch\"
+If the project was recreated since (e.g. re-running ./init --demo), git no
+longer knows this worktree and the commands above fail — delete the leftover
+directory instead: rm -rf \"$worktree\""
 
 if git -C "$OVERLORD_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
     die "branch already exists: $branch

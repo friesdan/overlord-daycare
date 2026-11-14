@@ -96,9 +96,12 @@ if [ "$OVERLORD_APPROVAL_RULE" != "auto" ] && [ "$yes_flag" -ne 1 ]; then
         info "NOTE: review verdict is FINDINGS — read $run_dir/review.md before answering."
     fi
     answer=""
-    if [ -t 0 ] || [ -r /dev/tty ]; then
+    if [ -t 0 ]; then
         printf 'Merge into %s? [y/N] ' "$OVERLORD_BASE_BRANCH"
-        if [ -t 0 ]; then read -r answer || answer=""; else read -r answer < /dev/tty || answer=""; fi
+        read -r answer || answer=""
+    elif ( exec 3</dev/tty ) 2>/dev/null; then
+        printf 'Merge into %s? [y/N] ' "$OVERLORD_BASE_BRANCH"
+        read -r answer < /dev/tty || answer=""
     else
         info "no terminal for the approval question — treating it as 'no'."
         info "approve non-interactively with: bin/check-and-merge --yes $task"
