@@ -1,5 +1,7 @@
 # Pacing: spending every AI subscription evenly
 
+<img src="../assets/the-floor.jpg" alt="The operations floor, where the coordinator watches pacing across every AI subscription" width="720">
+
 Pacing is the secret sauce: a small dashboard tells the coordinator how many
 agents each AI subscription can run right now, so every plan is spent evenly —
 nothing sits unused at reset, nothing runs dry early.
