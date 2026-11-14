@@ -55,6 +55,10 @@ Use the cheapest model that is adequate; the dashboard decides *how many* lanes,
 
 Start at each vendor's recommended effort; go higher only where a gain is measured. Record outcomes and revisit monthly — measure, don't guess. Every critical change gets a different strong model as reviewer than its builder. Required review passes run even when a pool is over pace, if the owner has so decided; optional work waits.
 
+### The head overlord: which model and what effort
+
+The coordinator is the judgment layer: run it on the strongest model you have — **Claude Opus 5.5** in Claude Code — at **high** effort. **xhigh/max** is for a genuinely hard judgment call only (a design decision, a review spiral, a postmortem), never for routine heartbeats: higher effort costs tokens on every wake. A weak coordinator wastes far more than it saves, and it writes briefs, not code. Sub-overlords follow the table above, effort set explicitly on every launch; re-check these choices when new models ship.
+
 ## The train, stage by stage
 
 | Stage | What happens |
