@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# bin/status — show the merge-train state (STATE.md) plus a liveness check of
+# every open task: does its branch still exist, does its worktree still exist?
+# Read this after a restart to resume where you left off.
+set -u
+# shellcheck disable=SC1091  # path is relative to this script
+
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() {
+    cat <<'EOF'
+usage: bin/status
+
+Print every task recorded in STATE.md with its status, branch, verdict, and
+next step, plus a live check (branch/worktree still present?). If STATE.md is
+empty, suggests how to start. Read-only.
+EOF
+}
+
+[ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && { usage; exit 0; }
+[ $# -eq 0 ] || { usage >&2; exit 1; }
+
+if [ ! -f "$MTC_STATE" ]; then
+    info "no $MTC_STATE yet — no tasks have been run."
+    info "start with: ./init --demo && bin/loop demo examples/demo-task.md"
+    exit 0
+fi
+
+if [ -f "$MTC_CONFIG" ]; then
+    # shellcheck disable=SC1090
+    . "$MTC_CONFIG"
+    info "project : ${MTC_PROJECT_DIR:-?}  (base: ${MTC_BASE_BRANCH:-?})"
+    info "approval: ${MTC_APPROVAL_RULE:-human-approve}"
+    echo
+else
+    info "project : (not configured — run ./init)"
+    echo
+fi
+
+tasks="$(awk '/^## / { sub(/^## */, ""); print }' "$MTC_STATE")"
+[ -n "$tasks" ] || { info "STATE.md has no tasks yet."; exit 0; }
+
+for task in $tasks; do
+    status="$(state_get "$task" status)"
+    branch="$(state_get "$task" branch)"
+    worktree="$(state_get "$task" worktree)"
+    verdict="$(state_get "$task" review_verdict)"
+    tests="$(state_get "$task" tests)"
+    next="$(state_get "$task" next_step)"
+    updated="$(state_get "$task" updated)"
+
+    info "## $task — ${status:-?} (updated ${updated:-?})"
+    [ -n "$branch" ] && info "   branch : $branch"
+    [ -n "$tests" ] && info "   tests  : $tests"
+    [ -n "$verdict" ] && info "   review : $verdict"
+    [ -n "$worktree" ] && info "   tree   : $worktree"
+    [ -n "$next" ] && info "   next   : $next"
+
+    # liveness (only meaningful while the task is open)
+    if [ "${status:-}" = "open" ] || [ "${status:-}" = "" ]; then
+        if [ -n "$branch" ] && [ -n "${MTC_PROJECT_DIR:-}" ]; then
+            if git -C "$MTC_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
+                :
+            else
+                warn "   branch $branch is gone from ${MTC_PROJECT_DIR:-the project}"
+            fi
+        fi
+        case "$worktree" in
+            "(removed:"*|"") : ;;
+            *) [ -d "$worktree" ] || warn "   worktree $worktree is gone" ;;
+        esac
+    fi
+    echo
+done
+
+info "(this is STATE.md, maintained by the bin/* scripts — a coordinator agent"
+info " resumes from it after a restart; full file: $MTC_STATE)"

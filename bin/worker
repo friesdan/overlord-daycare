@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# bin/worker <task-name> <task-file>
+#
+# Create an isolated git worktree + branch for the task, run the configured
+# worker command there with the task text plus a standard instruction block
+# (edit, run tests, commit, stop — never push), and log everything to
+# .mtc/runs/<task>/worker.log. Updates STATE.md.
+set -u -o pipefail
+# shellcheck disable=SC1091  # path is relative to this script
+
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() {
+    cat <<'EOF'
+usage: bin/worker <task-name> <task-file>
+
+Create a worktree + branch mt/<task-name> off the configured base branch,
+run the worker AI command inside it with the task file as the brief, and
+record the run under .mtc/runs/<task-name>/.
+
+  task-name   short slug (letters, digits, . _ -); becomes branch mt/<task-name>
+  task-file   markdown file describing the task (the worker's brief)
+
+Environment overrides (see ./init): MTC_WORKER_CMD, MTC_WORKER_TIMEOUT, ...
+The worker command may reference "$PROMPT", "$PROMPT_FILE", "$MTC_WORKTREE".
+Never pushes. Exits non-zero if the worker command fails or commits nothing.
+EOF
+}
+
+[ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && { usage; exit 0; }
+[ $# -eq 2 ] || { usage >&2; exit 1; }
+
+task="$1"
+task_file="$2"
+valid_task_name "$task" || die "invalid task name '$task' (use letters, digits, . _ -)"
+
+[ -f "$task_file" ] || die "task file not found: $task_file
+Pass it relative to the current directory or as an absolute path."
+task_file="$(cd "$(dirname "$task_file")" && pwd)/$(basename "$task_file")"
+
+load_config
+
+branch="$(task_branch "$task")"
+worktree="$(task_worktree "$task")"
+run_dir="$(task_run_dir "$task")"
+
+[ -e "$worktree" ] && die "worktree already exists: $worktree
+If the task is finished, merge it (bin/check-and-merge $task) or clean up:
+  git -C \"$MTC_PROJECT_DIR\" worktree remove --force \"$worktree\"
+  git -C \"$MTC_PROJECT_DIR\" branch -D \"$branch\""
+
+if git -C "$MTC_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
+    die "branch already exists: $branch
+Pick a new task name, or delete the branch: git -C \"$MTC_PROJECT_DIR\" branch -D \"$branch\""
+fi
+
+git -C "$MTC_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$MTC_BASE_BRANCH" || \
+    die "base branch '$MTC_BASE_BRANCH' not found in $MTC_PROJECT_DIR (check MTC_BASE_BRANCH in $MTC_CONFIG)"
+
+mkdir -p "$run_dir" "$MTC_WORKTREE_ROOT"
+
+info "==> creating worktree $worktree (branch $branch from $MTC_BASE_BRANCH)"
+if ! git -C "$MTC_PROJECT_DIR" worktree add -b "$branch" "$worktree" "$MTC_BASE_BRANCH" \
+        > "$run_dir/worktree.log" 2>&1; then
+    cat "$run_dir/worktree.log" >&2
+    die "git worktree add failed (see $run_dir/worktree.log)"
+fi
+
+# ---- Build the worker prompt: task text + standard instruction block -------
+{
+    cat <<EOF
+# Task: $task
+
+Your job is a single bounded change in an isolated git worktree. A coordinator
+will review and merge it; you will not.
+
+## The task (from $(basename "$task_file"))
+
+EOF
+    cat "$task_file"
+    cat <<EOF
+
+## Rules
+
+- You are in $worktree — a git worktree of $(basename "$MTC_PROJECT_DIR") on branch $branch.
+- Make the smallest change that completes the task. Nothing else.
+- Run the tests with: $MTC_TEST_CMD
+- Fix the code until the tests pass, then stage and commit everything
+  (git add -A && git commit) on the current branch.
+- Never push. Never merge. Never touch other branches or checkouts.
+- Do not use network credentials or anything secret.
+- When done (or blocked), print a short summary of what you changed and stop.
+EOF
+} > "$run_dir/prompt.md"
+
+PROMPT="$(cat "$run_dir/prompt.md")"
+export PROMPT
+export PROMPT_FILE="$run_dir/prompt.md"
+export MTC_WORKTREE="$worktree"
+export MTC_TASK="$task"
+
+info "==> running worker (in $worktree): $MTC_WORKER_CMD"
+info "    (log: $run_dir/worker.log; timeout: ${MTC_WORKER_TIMEOUT}s)"
+rc=0
+( cd "$worktree" && run_bounded "$MTC_WORKER_TIMEOUT" "$MTC_WORKER_CMD" ) \
+    2>&1 | tee "$run_dir/worker.log" || rc=$?
+
+state_set "$task" status "open"
+state_set "$task" branch "$branch"
+state_set "$task" worktree "$worktree"
+state_set "$task" last_step "worker"
+
+commits="$(git -C "$worktree" rev-list --count "$MTC_BASE_BRANCH..$branch" 2>/dev/null || echo 0)"
+
+if [ "$rc" -ne 0 ]; then
+    state_set "$task" next_step "rework: worker exited $rc — read $run_dir/worker.log, fix, rerun bin/worker with a fresh task name or finish by hand"
+    die "worker command exited $rc — full log: $run_dir/worker.log"
+fi
+
+if [ "$commits" -eq 0 ]; then
+    state_set "$task" next_step "rework: worker committed nothing — read $run_dir/worker.log"
+    die "worker exited 0 but made no commits on $branch
+Nothing to review. Check the log: $run_dir/worker.log"
+fi
+
+state_set "$task" next_step "review"
+info "==> worker done: $commits commit(s) on $branch"
+info "    next: bin/review $task"
+exit 0

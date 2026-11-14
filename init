@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# ./init — interactive setup for the agent-merge-train starter kit.
+#
+# Asks a handful of questions (all with sensible defaults) and writes:
+#   .mtc/config.env   — every setting, editable by hand
+#   .mtc/SKILL.md     — a COPY of coordinator-skill/SKILL.md with the
+#                       <<YOUR ...>> placeholders filled in
+#   .mtc/*.md         — small starter files the skill points at
+#
+# Non-interactive: pass flags (--project, --test-cmd, --worker, --reviewer,
+# --approval, --base, --worktree-root) or set MTC_* env vars as defaults.
+# ./init --demo configures the built-in demo project instead. Idempotent:
+# re-running updates the config; the .mtc/*.md starter files are only created
+# if missing so your edits survive.
+# shellcheck shell=bash disable=SC2016,SC1091  # $PROMPT templates are expanded by bin/*, not here
+set -u
+
+. "$(dirname "$0")/lib/common.sh"
+
+usage() {
+    cat <<'EOF'
+usage: ./init [options]
+
+options:
+  --demo              configure the built-in demo (examples/demo-project copied
+                      to .mtc/demo-project, a fresh throwaway git repo)
+  --project PATH      target project (a git repository)
+  --base BRANCH       branch to branch from and merge into (default: detected)
+  --test-cmd CMD      command that runs the tests in the project root
+  --worker CMD        worker AI command template ('"$PROMPT"' = task text)
+  --reviewer CMD      reviewer AI command template ('"$PROMPT"' = review text)
+  --approval RULE     human-approve (default) or auto (see README)
+  --worktree-root D   where task worktrees live
+  --force             no extra effect today: config is always rewritten;
+                      here so scripts/CI can be explicit
+  --help              this help
+
+With --demo or with all values supplied via flags/env, nothing is asked.
+Otherwise missing values are prompted for (Enter accepts the [default]).
+EOF
+}
+
+DEMO=0
+PROJECT="" BASE="" TESTCMD="" WORKER="" REVIEWER="" APPROVAL="" WTROOT=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --demo) DEMO=1 ;;
+        --project) shift; PROJECT="${1:-}" ;;
+        --base) shift; BASE="${1:-}" ;;
+        --test-cmd) shift; TESTCMD="${1:-}" ;;
+        --worker) shift; WORKER="${1:-}" ;;
+        --reviewer) shift; REVIEWER="${1:-}" ;;
+        --approval) shift; APPROVAL="${1:-}" ;;
+        --worktree-root) shift; WTROOT="${1:-}" ;;
+        --force) : ;;
+        --help|-h) usage; exit 0 ;;
+        *) die "unknown option: $1 (try --help)" ;;
+    esac
+    shift
+done
+
+# ---- Which AI CLIs are installed? ------------------------------------------
+HAVE_CLAUDE=0; command -v claude >/dev/null 2>&1 && HAVE_CLAUDE=1
+HAVE_CODEX=0;  command -v codex  >/dev/null 2>&1 && HAVE_CODEX=1
+
+CLAUDE_WORKER='claude -p "$PROMPT" --permission-mode acceptEdits --allowedTools "Bash(python3:*) Bash(git:*) Bash(npm:*) Bash(make:*)"'
+CLAUDE_REVIEWER='claude -p "$PROMPT"'
+CODEX_WORKER='codex exec --sandbox workspace-write "$PROMPT"'
+CODEX_REVIEWER='codex exec --sandbox read-only "$PROMPT"'
+
+# ---- One interactive prompt helper ------------------------------------------
+ask() {
+    # ask <varname> <question> <default>
+    local __var="$1" __q="$2" __def="$3" __ans=""
+    printf '%s [%s]: ' "$__q" "$__def"
+    read -r __ans || __ans=""
+    [ -n "$__ans" ] || __ans="$__def"
+    eval "$__var=\"\$__ans\""
+}
+
+detect_base() {
+    local d="$1"
+    if git -C "$d" show-ref --verify --quiet refs/heads/main; then echo main
+    elif git -C "$d" show-ref --verify --quiet refs/heads/master; then echo master
+    else git -C "$d" symbolic-ref --short HEAD 2>/dev/null || echo main
+    fi
+}
+
+# ---- Existing config provides defaults (idempotent re-runs) ----------------
+OLD_PROJECT="" OLD_TESTCMD="" OLD_WORKER="" OLD_REVIEWER="" OLD_APPROVAL=""
+if [ -f "$MTC_CONFIG" ]; then
+    OLD_PROJECT="$(  sed -n "s/^MTC_PROJECT_DIR='\(.*\)'$/\1/p" "$MTC_CONFIG" | tail -1)"
+    OLD_TESTCMD="$(  sed -n "s/^MTC_TEST_CMD='\(.*\)'$/\1/p"       "$MTC_CONFIG" | tail -1)"
+    OLD_WORKER="$(   sed -n "s/^MTC_WORKER_CMD='\(.*\)'$/\1/p"     "$MTC_CONFIG" | tail -1)"
+    OLD_REVIEWER="$( sed -n "s/^MTC_REVIEWER_CMD='\(.*\)'$/\1/p"   "$MTC_CONFIG" | tail -1)"
+    OLD_APPROVAL="$( sed -n "s/^MTC_APPROVAL_RULE='\(.*\)'$/\1/p"  "$MTC_CONFIG" | tail -1)"
+fi
+[ -n "$PROJECT"  ] || PROJECT="${MTC_PROJECT_DIR:-$OLD_PROJECT}"
+[ -n "$TESTCMD"  ] || TESTCMD="${MTC_TEST_CMD:-$OLD_TESTCMD}"
+[ -n "$WORKER"   ] || WORKER="${MTC_WORKER_CMD:-$OLD_WORKER}"
+[ -n "$REVIEWER" ] || REVIEWER="${MTC_REVIEWER_CMD:-$OLD_REVIEWER}"
+[ -n "$APPROVAL" ] || APPROVAL="${MTC_APPROVAL_RULE:-$OLD_APPROVAL}"
+
+# ---- Demo mode: build the throwaway project repo ----------------------------
+if [ "$DEMO" -eq 1 ]; then
+    demo_src="$MTC_KIT/examples/demo-project"
+    demo_dst="$MTC_DIR/demo-project"
+    info "==> setting up the demo project at $demo_dst (recreated fresh)"
+    rm -rf "$demo_dst"
+    mkdir -p "$demo_dst"
+    cp -R "$demo_src/." "$demo_dst/"
+    git -C "$demo_dst" init -q
+    git -C "$demo_dst" checkout -q -b main
+    # A local, generic identity so commits work on machines with no git config.
+    git -C "$demo_dst" config user.name "Merge Train Demo"
+    git -C "$demo_dst" config user.email "demo@example.com"
+    git -C "$demo_dst" add -A
+    git -C "$demo_dst" commit -qm "demo project: calc with one failing test"
+
+    PROJECT="$demo_dst"
+    BASE="main"
+    TESTCMD="python3 -m unittest discover"
+    command -v python3 >/dev/null 2>&1 || \
+        die "the demo needs python3 on PATH (stdlib only, nothing to install)"
+
+    if [ "$HAVE_CLAUDE" -eq 1 ] && [ "$HAVE_CODEX" -eq 1 ]; then
+        WORKER="$CLAUDE_WORKER"; REVIEWER="$CODEX_REVIEWER"
+    elif [ "$HAVE_CLAUDE" -eq 1 ]; then
+        WORKER="$CLAUDE_WORKER"; REVIEWER="$CLAUDE_REVIEWER"
+        warn "only 'claude' found — worker and reviewer will be the same model."
+        warn "an independent reviewer (e.g. codex) catches more; install one later."
+    elif [ "$HAVE_CODEX" -eq 1 ]; then
+        WORKER="$CODEX_WORKER"; REVIEWER="$CODEX_REVIEWER"
+        warn "only 'codex' found — worker and reviewer will be the same model."
+        warn "an independent reviewer (e.g. claude) catches more; install one later."
+    else
+        WORKER="\"$MTC_KIT/examples/stubs/fix-demo-worker.sh\""
+        REVIEWER="\"$MTC_KIT/examples/stubs/clean-reviewer.sh\""
+        warn "no AI CLI found (claude/codex) — the demo will use stub commands"
+        warn "that apply a canned fix with no AI. Install a CLI and re-run"
+        warn "./init --demo to see the real thing."
+    fi
+    [ -n "$APPROVAL" ] || APPROVAL="human-approve"
+fi
+
+# ---- Real project: gather the remaining values ------------------------------
+if [ "$DEMO" -ne 1 ]; then
+    interactive=1
+    if [ -n "$PROJECT" ] && [ -n "$TESTCMD" ] && [ -n "$WORKER" ] && [ -n "$REVIEWER" ]; then
+        interactive=0
+    elif [ ! -t 0 ]; then
+        die "non-interactive and missing required values. Pass them as flags:
+  ./init --project /path/to/repo --test-cmd 'npm test' \\
+         --worker 'claude -p \"\$PROMPT\" ...' --reviewer 'codex exec ... \"\$PROMPT\"'
+(or run ./init with a terminal for the interactive prompts, or ./init --demo)"
+    fi
+
+    if [ "$interactive" -eq 1 ]; then
+        info "=== agent-merge-train setup — Enter accepts each [default] ==="
+        tries=0
+        while true; do
+            ask PROJECT "1. Target project path (a git repo)" "${PROJECT:-$PWD/my-project}"
+            if [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then break; fi
+            tries=$((tries + 1))
+            [ "$tries" -ge 3 ] && die "not a git repository: $PROJECT"
+            warn "'$PROJECT' is not a git repository (no .git) — try again"
+        done
+        PROJECT="$(cd "$PROJECT" && pwd)"
+    else
+        [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ] || die "--project '$PROJECT' is not a git repository"
+        PROJECT="$(cd "$PROJECT" && pwd)"
+    fi
+
+    DEF_BASE="$(detect_base "$PROJECT")"
+    [ -n "$BASE" ] || BASE="$DEF_BASE"
+    if [ "$interactive" -eq 1 ]; then
+        ask BASE "2. Base branch (branch from it, merge into it)" "$BASE"
+        ask TESTCMD "3. Test command (run from the project root; 'true' = skip)" "${TESTCMD:-make test}"
+        if [ "$HAVE_CLAUDE" -eq 1 ] && [ "$HAVE_CODEX" -eq 1 ]; then
+            dw="$CLAUDE_WORKER"; dr="$CODEX_REVIEWER"
+        elif [ "$HAVE_CLAUDE" -eq 1 ]; then
+            dw="$CLAUDE_WORKER"; dr="$CLAUDE_REVIEWER"
+        elif [ "$HAVE_CODEX" -eq 1 ]; then
+            dw="$CODEX_WORKER"; dr="$CODEX_REVIEWER"
+        else
+            dw=""; dr=""
+        fi
+        [ -n "$WORKER" ] || WORKER="$dw"
+        [ -n "$REVIEWER" ] || REVIEWER="$dr"
+        ask WORKER "4. Worker command (\$PROMPT = task text)" "${WORKER:-claude -p \"\$PROMPT\" ...}"
+        ask REVIEWER "5. Reviewer command — different model if possible" "${REVIEWER:-codex exec --sandbox read-only \"\$PROMPT\"}"
+        if [ "$WORKER" = "$REVIEWER" ]; then
+            warn "worker and reviewer commands are identical — an independent"
+            warn "reviewer (a different model family) catches more (HOW-WE-WORK.md §1)."
+        fi
+        [ -n "$APPROVAL" ] || APPROVAL="human-approve"
+        ask APPROVAL "6. Approval rule: human-approve or auto" "$APPROVAL"
+        [ -n "$WTROOT" ] || WTROOT="$HOME/.agent-merge-train/worktrees/$(basename "$PROJECT")"
+        ask WTROOT "7. Directory for task worktrees" "$WTROOT"
+    fi
+fi
+
+case "$APPROVAL" in
+    human-approve|auto) ;;
+    *) die "approval rule must be 'human-approve' or 'auto', got: $APPROVAL" ;;
+esac
+[ -n "$WTROOT" ] || WTROOT="$HOME/.agent-merge-train/worktrees/$(basename "$PROJECT")"
+case "$WTROOT" in
+    /*) : ;;
+    *) die "worktree root must be an absolute path, got: $WTROOT" ;;
+esac
+
+# ---- Write .mtc/config.env ---------------------------------------------------
+mkdir -p "$MTC_DIR"
+{
+    echo "# agent-merge-train configuration — written by ./init on $(now_iso)."
+    echo "# Edit by hand or re-run ./init. Sourced as shell; values single-quoted."
+    echo "# Env vars (MTC_WORKER_CMD=... bin/worker ...) override anything here."
+    echo ""
+    echo "# Target project (git repo) the train works on."
+    echo "MTC_PROJECT_DIR=$(shell_quote "$PROJECT")"
+    echo "# Branch tasks start from and merge into."
+    echo "MTC_BASE_BRANCH=$(shell_quote "${BASE:-main}")"
+    echo "# Test command, run from the worktree root. 'true' skips tests."
+    echo "MTC_TEST_CMD=$(shell_quote "${TESTCMD:-true}")"
+    echo "# Worker AI: runs INSIDE the task worktree. \$PROMPT = full task brief,"
+    echo "# \$PROMPT_FILE = same as a file, \$MTC_WORKTREE = the worktree path."
+    echo "MTC_WORKER_CMD=$(shell_quote "$WORKER")"
+    echo "# Reviewer AI: read-only, gets the diff in \$PROMPT. Use a DIFFERENT"
+    echo "# model family than the worker when you can."
+    echo "MTC_REVIEWER_CMD=$(shell_quote "$REVIEWER")"
+    echo "# human-approve: merge gate asks a human (default, recommended)."
+    echo "# auto: merge with no prompt, only when tests pass AND review is CLEAN."
+    echo "MTC_APPROVAL_RULE=$(shell_quote "$APPROVAL")"
+    echo "# Where task worktrees live (outside both repos)."
+    echo "MTC_WORKTREE_ROOT=$(shell_quote "$WTROOT")"
+    echo "# Time bounds, seconds (no bound if 'timeout' is unavailable)."
+    echo "MTC_WORKER_TIMEOUT='1800'"
+    echo "MTC_REVIEWER_TIMEOUT='900'"
+    echo "MTC_TEST_TIMEOUT='1200'"
+} > "$MTC_CONFIG"
+info "==> wrote $MTC_CONFIG"
+
+# ---- Copy the skill and fill its placeholders (template stays untouched) -----
+sed \
+    -e "s|<<YOUR VALUES FILE>>|$MTC_DIR/VALUES.md|g" \
+    -e "s|<<YOUR HANDOFF FILE>>|$MTC_DIR/HANDOFF.md|g" \
+    -e "s|<<YOUR HEARTBEAT CHECKLIST>>|$MTC_DIR/HEARTBEAT.md|g" \
+    -e "s|<<YOUR DASHBOARD ENDPOINT>>|(optional — not configured; see HOW-WE-WORK.md §2)|g" \
+    -e "s|<<YOUR PUSH SCRIPT>>|(optional — this kit never pushes; script it when you add CI)|g" \
+    -e "s|<<YOUR CHECKS SCRIPT>>|$MTC_KIT/bin/check-and-merge <task> (runs the tests on the task branch)|g" \
+    -e "s|<<YOUR PREFLIP REVIEW>>|$MTC_KIT/bin/review <task> (independent reviewer on the exact head)|g" \
+    -e "s|<<YOUR FLIP SCRIPT>>|(the approval + merge step inside $MTC_KIT/bin/check-and-merge)|g" \
+    -e "s|<<YOUR DEFERRED LOG>>|$MTC_DIR/DEFERRED.md|g" \
+    -e "s|<<YOUR BOARD>>|$MTC_DIR/BOARD.md|g" \
+    -e "s|<<YOUR CRITICAL LIST>>|$MTC_DIR/CRITICAL-LIST.md|g" \
+    -e "s|<<YOUR LANE LAUNCHERS>>|$MTC_KIT/bin/worker and $MTC_KIT/bin/loop|g" \
+    -e "s|<<YOUR SNAPSHOT DIR>>|$MTC_DIR/snapshots|g" \
+    "$MTC_KIT/coordinator-skill/SKILL.md" > "$MTC_DIR/SKILL.md.tmp"
+
+awk -v note="> Copied and filled in by ./init on $(date -u '+%Y-%m-%d'). This is YOUR copy — edit it. The template lives at coordinator-skill/SKILL.md; ./init never edits the template." '
+    { print }
+    $0 == "---" { c++; if (c == 2 && !done) { print ""; print note; done = 1 } }
+' "$MTC_DIR/SKILL.md.tmp" > "$MTC_DIR/SKILL.md"
+rm -f "$MTC_DIR/SKILL.md.tmp"
+if grep -q '<<YOUR [A-Z]' "$MTC_DIR/SKILL.md"; then
+    warn "some <<YOUR ...>> placeholders remain in .mtc/SKILL.md — fill them by hand."
+fi
+info "==> wrote $MTC_DIR/SKILL.md (skill copy with placeholders filled)"
+
+# ---- Starter files the skill points at (only if missing) ---------------------
+mkdir -p "$MTC_DIR/snapshots"
+write_if_absent() { # write_if_absent <file> <text...>
+    local f="$1"; shift
+    [ -e "$f" ] && return 0
+    cat > "$f"
+    info "==> wrote $f"
+}
+
+write_if_absent "$MTC_DIR/VALUES.md" <<'EOF'
+# Decision values (one page)
+
+Consulted before any judgment call (HOW-WE-WORK.md §9). Edit freely.
+
+- **Who decides what:** the owner decides anything visible (behavior, wording,
+  scope, money); the agent decides everything technical — decide, act, report.
+- **Critical list:** anything that moves money, corrupts data, leaks private
+  information, breaks authentication, or breaks a live flow. Always fixed
+  before merge, always reviewed by the strongest available model.
+- **Defaults:** smallest change that works; standard patterns first; a user
+  would rather have less working than more broken.
+EOF
+
+write_if_absent "$MTC_DIR/CRITICAL-LIST.md" <<'EOF'
+# Critical list — always fix before merge
+
+Anything that could: move or lose money wrongly, corrupt records, leak
+private data, break authentication, or break a live flow — plus anything a
+user would see broken. Everything else can be deferred WITH a trigger
+(HOW-WE-WORK.md §5).
+EOF
+
+write_if_absent "$MTC_DIR/HANDOFF.md" <<'EOF'
+# Handoff — live state
+
+Rewritten by the coordinator whenever anything changes; read first on any
+restart. Keep it short enough to actually re-read (HOW-WE-WORK.md §7).
+
+- **Now:** nothing running. Start with `bin/status` and STATE.md.
+- **Next:** (what the train does next)
+- **Needs the owner:** (nothing / ...)
+EOF
+
+write_if_absent "$MTC_DIR/HEARTBEAT.md" <<'EOF'
+# Heartbeat checklist
+
+The only place heartbeat behavior lives; the scheduled prompt just points
+here (HOW-WE-WORK.md §6). A ~30-minute scheduler prompt can be simply:
+
+    Read .mtc/HEARTBEAT.md and do what it says.
+
+- [ ] bin/status — act on every warning
+- [ ] Anything to merge? (tests + review clean → merge gate)
+- [ ] New tasks to start? (bin/worker / bin/loop)
+- [ ] Update .mtc/HANDOFF.md if anything changed
+EOF
+
+write_if_absent "$MTC_DIR/DEFERRED.md" <<'EOF'
+# Deferred findings
+
+A deferral without a trigger is a deletion with extra steps (HOW-WE-WORK.md
+§5). One entry per line:
+
+- YYYY-MM-DD <area> — <what> — <what event triggers picking it up>
+EOF
+
+write_if_absent "$MTC_DIR/BOARD.md" <<'EOF'
+# Board
+
+Glanceable at the top; one row per open change (HOW-WE-WORK.md §8).
+
+| Change | Status | Next step | Needs owner? |
+| --- | --- | --- | --- |
+| (none) | — | — | — |
+
+## Decisions
+
+Only real owner decisions (visible behavior, wording, scope, money policy).
+
+- [ ] (question, options, recommended default, what happens if unanswered)
+EOF
+
+# ---- Done --------------------------------------------------------------------
+echo
+info "=== configured ==="
+info "  project : $PROJECT (base: ${BASE:-main})"
+info "  tests   : ${TESTCMD:-true}"
+info "  worker  : $WORKER"
+info "  reviewer: $REVIEWER"
+info "  approval: $APPROVAL"
+echo
+if [ "$DEMO" -eq 1 ]; then
+    info "Run the whole supervised loop now:"
+    info "  bin/loop demo examples/demo-task.md"
+    info "You will see: worktree created -> worker fix -> tests -> independent"
+    info "review -> 'Merge into main? [y/N]'. Answer y to merge. Never pushes."
+else
+    info "First loop on your project — write a small task file, then:"
+    info "  bin/loop my-first-task path/to/task.md"
+    info "Step by step instead: bin/worker, bin/review, bin/check-and-merge."
+    info "The coordinator's operating manual is at .mtc/SKILL.md (yours to edit)."
+fi

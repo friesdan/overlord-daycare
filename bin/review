@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# bin/review <task-name>
+#
+# Run the configured reviewer command on git diff <base>...mt/<task> with a
+# standard review prompt, and save the output to .mtc/runs/<task>/review.md.
+# The reviewer must end with a final line "VERDICT: CLEAN" or
+# "VERDICT: FINDINGS". Updates STATE.md.
+set -u -o pipefail
+# shellcheck disable=SC1091  # path is relative to this script
+
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() {
+    cat <<'EOF'
+usage: bin/review <task-name>
+
+Run the reviewer AI command on the full diff base...mt/<task-name> and save
+its output to .mtc/runs/<task-name>/review.md.
+
+The reviewer should be a DIFFERENT model/CLI than the worker — an independent
+reviewer catches blind spots the builder shares (HOW-WE-WORK.md §1).
+
+Exit codes: 0 = VERDICT: CLEAN, 2 = VERDICT: FINDINGS, 1 = error
+(bad task, empty diff, reviewer failed, or no recognizable verdict line).
+Never pushes; the reviewer is expected to be read-only.
+EOF
+}
+
+[ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && { usage; exit 0; }
+[ $# -eq 1 ] || { usage >&2; exit 1; }
+
+task="$1"
+valid_task_name "$task" || die "invalid task name '$task'"
+
+load_config
+
+branch="$(task_branch "$task")"
+run_dir="$(task_run_dir "$task")"
+git -C "$MTC_PROJECT_DIR" show-ref --verify --quiet "refs/heads/$branch" || \
+    die "branch $branch not found in $MTC_PROJECT_DIR — run bin/worker $task first"
+
+mkdir -p "$run_dir"
+
+diff_file="$run_dir/review.diff"
+git -C "$MTC_PROJECT_DIR" diff "$MTC_BASE_BRANCH...$branch" > "$diff_file"
+[ -s "$diff_file" ] || die "diff base...$branch is empty — nothing to review.
+Did the worker commit anything? (.mtc/runs/$task/worker.log)"
+
+commit="$(git -C "$MTC_PROJECT_DIR" rev-parse "$branch")"
+
+{
+    cat <<EOF
+# Independent code review
+
+Review ONLY the diff below (base branch $MTC_BASE_BRANCH -> branch $branch,
+head commit $commit). You are the reviewer, not the author: assume nothing
+about intent; check what the change actually does.
+
+Find REAL bugs: correctness, data loss, security, broken tests, changes that
+contradict the task, or APIs used wrongly. For each finding give:
+
+- BLOCKING or NON-BLOCKING
+- file and line
+- what breaks, for whom, in which situation
+
+Style nits are non-blocking. If you find nothing real, say so in one line.
+
+Your FINAL line must be exactly one of:
+VERDICT: CLEAN
+VERDICT: FINDINGS
+
+## Diff
+
+EOF
+    cat "$diff_file"
+} > "$run_dir/review-prompt.md"
+
+PROMPT="$(cat "$run_dir/review-prompt.md")"
+export PROMPT
+export PROMPT_FILE="$run_dir/review-prompt.md"
+export MTC_WORKTREE="$MTC_PROJECT_DIR"
+export MTC_TASK="$task"
+
+info "==> running reviewer on $branch ($commit): $MTC_REVIEWER_CMD"
+info "    (output: $run_dir/review.md; timeout: ${MTC_REVIEWER_TIMEOUT}s)"
+rc=0
+( cd "$MTC_PROJECT_DIR" && run_bounded "$MTC_REVIEWER_TIMEOUT" "$MTC_REVIEWER_CMD" ) \
+    2>&1 | tee "$run_dir/review.md" || rc=$?
+
+state_set "$task" last_step "review"
+
+if [ "$rc" -ne 0 ]; then
+    state_set "$task" next_step "rework: reviewer exited $rc — read $run_dir/review.md"
+    die "reviewer command exited $rc — full output: $run_dir/review.md"
+fi
+
+verdict="$(grep -E '^VERDICT: (CLEAN|FINDINGS)[[:space:]]*$' "$run_dir/review.md" | tail -1 | sed 's/^VERDICT: //;s/[[:space:]]*$//')"
+
+if [ "$verdict" != "CLEAN" ] && [ "$verdict" != "FINDINGS" ]; then
+    state_set "$task" next_step "re-review: no VERDICT line in reviewer output"
+    die "reviewer output has no final 'VERDICT: CLEAN' or 'VERDICT: FINDINGS' line.
+The command template may need adjusting (it receives the review as \"\$PROMPT\").
+Full output: $run_dir/review.md"
+fi
+
+state_set "$task" review_verdict "$verdict"
+state_set "$task" next_step "check-and-merge"
+
+if [ "$verdict" = "CLEAN" ]; then
+    info "==> review verdict: CLEAN"
+    info "    next: bin/check-and-merge $task"
+    exit 0
+else
+    info "==> review verdict: FINDINGS — read $run_dir/review.md"
+    info "    fix them (rerun a worker round or edit by hand), or judge them"
+    info "    non-blocking at the merge gate: bin/check-and-merge $task"
+    exit 2
+fi
