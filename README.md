@@ -161,6 +161,9 @@ add pieces in this order ([HOW-WE-WORK.md §11](HOW-WE-WORK.md#11-start-small-bo
   steps after ([§7](HOW-WE-WORK.md#7-surviving-long-sessions-compaction-and-the-handoff)).
 - **Status board** — a phone-glanceable board and a Decisions tab
   ([§8](HOW-WE-WORK.md#8-talking-to-the-owner-a-phone-first-board)).
+- **CI and layered gates** — pre-push checks, CI on every push, exact-head
+  review, one ready change at a time
+  ([docs/ci-and-gates.md](docs/ci-and-gates.md)).
 
 The method write-up [`HOW-WE-WORK.md`](HOW-WE-WORK.md) covers all of it;
 [`coordinator-skill/SKILL.md`](coordinator-skill/SKILL.md) is the same method

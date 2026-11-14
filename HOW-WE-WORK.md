@@ -56,6 +56,10 @@ Keep a simple outcome ledger (task type, model, effort, accepted or not), review
 
 **Spiral rule:** the same class of finding in roughly three consecutive rounds means stop patching sites — fix the underlying design once (one shared rule, helper, or test) or cut that scope. After a handful of total rounds on one change, decide explicitly: finish, split, or defer the rest, and tell the owner in one line.
 
+### CI and gates
+
+The stages above rest on a stack of automated gates: fast checks before every push (a pre-push hook you never skip), CI on every push with the same checks plus the slow ones, review on the exact commit that will merge (any new push makes old results stale), independent review by a different model family with severity triage — only critical issues block, the rest become logged follow-ups with a trigger — and one ready change at a time, merged by a small script only when everything is green. Layered like this, cheap and deterministic first and expensive judgment last, the gates are what let the coordinator merge without a human watching. The layers, with the why for each and templates to copy, are written up in [`docs/ci-and-gates.md`](docs/ci-and-gates.md).
+
 ## 5. Fix versus defer: a short critical list
 
 The question is never "how severe did the reviewer call it?" but "what actually breaks, for whom?"
