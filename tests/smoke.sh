@@ -13,6 +13,9 @@
 #      (OVERLORD_PASS_ENV allowlisted ones do)
 #   7. example usage collector: fixtures -> pacing input format -> bin/pace
 #      reads it (no network; unit tests in tests/example-collector.test.mjs)
+#   8. credentials: fake secret not visible to final test; allowlisted var is
+#   9. concurrency: two workers finishing at once do not corrupt shared state
+#  10. integrated merge: merging two green branches re-runs gate on combined result
 #
 # Requires: git, bash, python3. Run from anywhere: tests/smoke.sh
 # Logs of each loop run are left in /tmp/overlord-smoke-*.log for debugging.
@@ -199,6 +202,152 @@ if command -v node >/dev/null 2>&1; then
 else
     echo "== node not found — skipping the collector scenario (bin/pace needs it too) =="
 fi
+
+echo "== scenario 8: secret does not reach final test; allowlisted var does =="
+reset_demo 8
+W8="$HOME/.overlord-daycare/worktrees/demo-project/demo8"
+if run_stage 8a "$KIT/bin/worker" demo8 "$KIT/examples/demo-task.md"; then
+    ok "bin/worker demo8 ran"
+else
+    bad "bin/worker demo8 failed (see /tmp/overlord-smoke-8a.log)"
+fi
+if run_stage 8b "$KIT/bin/review" demo8; then
+    ok "bin/review demo8 recorded CLEAN"
+else
+    bad "bin/review demo8 failed (see /tmp/overlord-smoke-8b.log)"
+fi
+
+PROBE_TEST='python3 -c "import os, sys; ok = (\"OVERLORD_TEST_FAKE_TOKEN\" not in os.environ and os.environ.get(\"SAFE_TEST_VAR\") == \"allow-ok\"); sys.exit(0 if ok else 1)"'
+
+if OVERLORD_TEST_FAKE_TOKEN=secret_val \
+   SAFE_TEST_VAR=allow-ok OVERLORD_PASS_ENV="SAFE_TEST_VAR" \
+   OVERLORD_TEST_CMD="$PROBE_TEST" OVERLORD_TEST_TIMEOUT=60 \
+   run_stage 8c "$KIT/bin/check-and-merge" --yes demo8; then
+    ok "final test command ran scrubbed (fake secret hidden, allowlisted var visible)"
+else
+    bad "final test command leaked secret or dropped allowlisted var (see /tmp/overlord-smoke-8c.log)"
+fi
+check "demo8 merged into main" git -C "$DEMO_REPO" merge-base --is-ancestor mt/demo8 main
+check "demo8 worktree removed after merge" test ! -d "$W8"
+
+echo "== scenario 9: concurrency — two workers finishing at once =="
+reset_demo 9
+W9A="$HOME/.overlord-daycare/worktrees/demo-project/demo9a"
+W9B="$HOME/.overlord-daycare/worktrees/demo-project/demo9b"
+
+if run_stage 9a "$KIT/bin/worker" demo9a "$KIT/examples/demo-task.md"; then
+    ok "bin/worker demo9a ran"
+else
+    bad "bin/worker demo9a failed"
+fi
+( cd "$W9A" && echo "# conflict alpha" >> calc.py && git commit -qam "demo9a: add conflict line" )
+if run_stage 9b "$KIT/bin/review" demo9a; then
+    ok "bin/review demo9a recorded CLEAN"
+else
+    bad "bin/review demo9a failed"
+fi
+
+if run_stage 9c "$KIT/bin/worker" demo9b "$KIT/examples/demo-task.md"; then
+    ok "bin/worker demo9b ran"
+else
+    bad "bin/worker demo9b failed"
+fi
+( cd "$W9B" && echo "# conflict beta" >> calc.py && git commit -qam "demo9b: add conflict line" )
+if run_stage 9d "$KIT/bin/review" demo9b; then
+    ok "bin/review demo9b recorded CLEAN"
+else
+    bad "bin/review demo9b failed"
+fi
+
+run_stage 9e "$KIT/bin/check-and-merge" --yes demo9a &
+PID_A=$!
+run_stage 9f "$KIT/bin/check-and-merge" --yes demo9b &
+PID_B=$!
+
+RC_A=0
+RC_B=0
+wait "$PID_A" || RC_A=$?
+wait "$PID_B" || RC_B=$?
+
+if { [ "$RC_A" -eq 0 ] && [ "$RC_B" -ne 0 ]; } || { [ "$RC_A" -ne 0 ] && [ "$RC_B" -eq 0 ]; }; then
+    ok "exactly one merge succeeded; competing merge refused"
+else
+    bad "concurrency error: RC_A=$RC_A RC_B=$RC_B"
+fi
+if { test ! -d "$W9A" && test -d "$W9B"; } || { test -d "$W9A" && test ! -d "$W9B"; }; then
+    ok "merged worktree removed; refused worktree kept"
+else
+    bad "worktree state invalid after concurrent merge"
+fi
+check "STATE.md demo9a entry valid" grep -q "## demo9a" "$OVERLORD_STATE"
+check "STATE.md demo9b entry valid" grep -q "## demo9b" "$OVERLORD_STATE"
+check "main repo working tree clean" test -z "$(git -C "$DEMO_REPO" status --porcelain)"
+
+echo "== scenario 10: integrated merge re-runs gate on combined result =="
+reset_demo 10
+W10A="$HOME/.overlord-daycare/worktrees/demo-project/demo10a"
+W10B="$HOME/.overlord-daycare/worktrees/demo-project/demo10b"
+
+if run_stage 10a "$KIT/bin/worker" demo10a "$KIT/examples/demo-task.md"; then
+    ok "bin/worker demo10a ran"
+else
+    bad "bin/worker demo10a failed"
+fi
+( cd "$W10A" && printf 'FLAG = True\n' > helper_flag.py && git add helper_flag.py && git commit -qm "add helper_flag.py" )
+if run_stage 10b "$KIT/bin/review" demo10a; then
+    ok "bin/review demo10a recorded CLEAN"
+else
+    bad "bin/review demo10a failed"
+fi
+
+if run_stage 10c "$KIT/bin/worker" demo10b "$KIT/examples/demo-task.md"; then
+    ok "bin/worker demo10b ran"
+else
+    bad "bin/worker demo10b failed"
+fi
+( cd "$W10B" && cat << 'EOFSCRIPT' > test_sem_check.py
+import unittest
+class TestSem(unittest.TestCase):
+    def test_flag(self):
+        try:
+            import helper_flag
+            self.assertFalse(helper_flag.FLAG)
+        except ImportError:
+            pass
+EOFSCRIPT
+  git add test_sem_check.py && git commit -qm "demo10b: add test_sem_check.py"
+)
+
+if ( cd "$W10B" && python3 -m unittest discover >/dev/null 2>&1 ); then
+    ok "demo10b tests pass in isolation"
+else
+    bad "demo10b tests failed in isolation"
+fi
+
+if run_stage 10d "$KIT/bin/review" demo10b; then
+    ok "bin/review demo10b recorded CLEAN"
+else
+    bad "bin/review demo10b failed"
+fi
+
+if run_stage 10e "$KIT/bin/check-and-merge" --yes demo10a; then
+    ok "demo10a merged into main"
+else
+    bad "demo10a failed to merge"
+fi
+
+if run_stage 10f "$KIT/bin/check-and-merge" --yes demo10b; then
+    bad "merge gate merged incompatible changes without catching combined test failure"
+else
+    ok "merge gate refused combined result on integrated test failure"
+fi
+check "rollback log mentions integrated test failure" grep -q "integrated" /tmp/overlord-smoke-10f.log
+if git -C "$DEMO_REPO" merge-base --is-ancestor mt/demo10b main; then
+    bad "demo10b was merged into main despite combined test failure"
+else
+    ok "demo10b was NOT merged into main"
+fi
+check "worktree kept after integrated refusal" test -d "$W10B"
 
 echo
 printf 'smoke: %d passed, %d failed\n' "$PASS" "$FAIL"

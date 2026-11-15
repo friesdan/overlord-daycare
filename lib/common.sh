@@ -37,6 +37,8 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     env_REVIEWER_TIMEOUT="${OVERLORD_REVIEWER_TIMEOUT-}"
     env_TEST_TIMEOUT="${OVERLORD_TEST_TIMEOUT-}"
     env_PASS_ENV="${OVERLORD_PASS_ENV-}"
+    env_ALLOW_ENV="${OVERLORD_ALLOW_ENV-}"
+    env_TEST_PASS_ENV="${OVERLORD_TEST_PASS_ENV-}"
 
     # shellcheck disable=SC1090
     . "$OVERLORD_CONFIG"
@@ -52,6 +54,8 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     [ -n "$env_REVIEWER_TIMEOUT" ] && OVERLORD_REVIEWER_TIMEOUT="$env_REVIEWER_TIMEOUT"
     [ -n "$env_TEST_TIMEOUT" ]   && OVERLORD_TEST_TIMEOUT="$env_TEST_TIMEOUT"
     [ -n "$env_PASS_ENV" ]       && OVERLORD_PASS_ENV="$env_PASS_ENV"
+    [ -n "$env_ALLOW_ENV" ]      && OVERLORD_ALLOW_ENV="$env_ALLOW_ENV"
+    [ -n "$env_TEST_PASS_ENV" ]  && OVERLORD_TEST_PASS_ENV="$env_TEST_PASS_ENV"
 
     # config may keep the worktree root symbolic ('$HOME/...'); expand that
     # one prefix without eval, then insist on an absolute path.
@@ -76,29 +80,46 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     OVERLORD_WORKER_TIMEOUT="${OVERLORD_WORKER_TIMEOUT:-1800}"
     OVERLORD_REVIEWER_TIMEOUT="${OVERLORD_REVIEWER_TIMEOUT:-900}"
     OVERLORD_TEST_TIMEOUT="${OVERLORD_TEST_TIMEOUT:-1200}"
+    OVERLORD_ALLOW_ENV="${OVERLORD_ALLOW_ENV:-PATH HOME LANG LC_* TERM TMPDIR}"
     OVERLORD_PASS_ENV="${OVERLORD_PASS_ENV:-}"
+    OVERLORD_TEST_PASS_ENV="${OVERLORD_TEST_PASS_ENV:-}"
 }
 
-# ---- Lane environment scrubbing --------------------------------------------
-# Worktrees isolate files, not credentials: everything exported in this shell
-# is inherited by the worker/reviewer AI. Call this in the subshell right
-# before launching a lane to unset secret-shaped variables. OVERLORD_PASS_ENV
-# (space-separated names, from .overlord/config.env or the environment) is the
-# explicit allowlist for the few variables a lane genuinely needs.
+# ---- Environment allowlist and scrubbing -----------------------------------
+# Worktrees isolate files, not credentials: child processes inherit the shell
+# environment. Worker, reviewer, and final test commands all run in a scrubbed
+# environment starting from an empty env (env -i) plus an explicit allowlist.
+# Safe default allowlist:
+#   PATH HOME LANG LC_* TERM TMPDIR
+# Configurable via OVERLORD_ALLOW_ENV in config.env. Additional variables
+# needed by a lane or test suite are passed via OVERLORD_PASS_ENV or
+# OVERLORD_TEST_PASS_ENV.
+lane_env_allowlist() {
+    printf '%s %s %s %s\n' \
+        "${OVERLORD_ALLOW_ENV:-PATH HOME LANG LC_* TERM TMPDIR}" \
+        "PROMPT PROMPT_FILE OVERLORD_WORKTREE OVERLORD_TASK" \
+        "${OVERLORD_PASS_ENV:-}" \
+        "${OVERLORD_TEST_PASS_ENV:-}"
+}
+
 lane_scrub_env() {
-    local v
-    # Names only, from line starts, so multiline values cannot fake an entry.
-    # Matches both bash's "declare -x NAME=" and plain "export NAME=" forms.
-    # The loop must NOT sit at the end of a pipeline: a piped while runs in a
-    # subshell and its unsets would never reach the caller.
+    local v pat allowed
+    local allowlist
+    allowlist="$(lane_env_allowlist)"
+
     while IFS= read -r v; do
-        case " $OVERLORD_PASS_ENV " in
-            *" $v "*) continue ;;    # explicitly allowlisted
-        esac
-        case "$v" in
-            *_TOKEN|*_KEY|*_SECRET|DATABASE_URL|AWS_*|STRIPE_*)
-                unset "$v" 2>/dev/null || true ;;
-        esac
+        [ -z "$v" ] && continue
+        allowed=0
+        for pat in $allowlist; do
+            # shellcheck disable=SC2053
+            if [[ "$v" == $pat ]]; then
+                allowed=1
+                break
+            fi
+        done
+        if [ "$allowed" -eq 0 ]; then
+            unset "$v" 2>/dev/null || true
+        fi
     done < <(
         export -p | grep -E '^(declare -x|export) [A-Za-z_][A-Za-z0-9_]*=' \
             | sed -E 's/^(declare -x|export) ([A-Za-z_][A-Za-z0-9_]*)=.*/\2/'
@@ -120,19 +141,38 @@ task_run_dir() { printf '%s/runs/%s' "$OVERLORD_DIR" "$1"; }
 
 # Run a shell command string under a time bound if `timeout`/`gtimeout` exists
 # (macOS has neither by default; then the run is unbounded and we say so).
-# PROMPT / PROMPT_FILE / OVERLORD_WORKTREE / OVERLORD_TASK are exported for the command.
+# Commands execute in an empty environment (env -i) plus the allowlist.
 run_bounded() {
-    local secs="$1" cmd="$2" t=""
+    local secs="$1" cmd="$2" t="" rc=0
     if command -v timeout >/dev/null 2>&1; then t=timeout
     elif command -v gtimeout >/dev/null 2>&1; then t=gtimeout
     fi
+
+    # Scrub environment starting from empty env (env -i) plus explicit allowlist
+    lane_scrub_env
+
+    local -a env_args=()
+    local v
+    while IFS= read -r v; do
+        [ -z "$v" ] && continue
+        env_args+=("$v=${!v}")
+    done < <(
+        export -p | grep -E '^(declare -x|export) [A-Za-z_][A-Za-z0-9_]*=' \
+            | sed -E 's/^(declare -x|export) ([A-Za-z_][A-Za-z0-9_]*)=.*/\2/'
+    )
+
+    local old_ifs="$IFS"
+    IFS=$'\x1f'
     if [ -n "$t" ]; then
-        # shellcheck disable=SC2086
-        $t "$secs" bash -c "$cmd"
+        # shellcheck disable=SC2048,SC2086
+        $t "$secs" env -i ${env_args[*]} bash -c "$cmd" || rc=$?
     else
         echo "note: no 'timeout' command found; running without a time bound" >&2
-        bash -c "$cmd"
+        # shellcheck disable=SC2048,SC2086
+        env -i ${env_args[*]} bash -c "$cmd" || rc=$?
     fi
+    IFS="$old_ifs"
+    return "$rc"
 }
 
 # ---- STATE.md ------------------------------------------------------------
@@ -162,10 +202,28 @@ EOF
     fi
 }
 
+state_lock() {
+    local lockdir="$OVERLORD_DIR/.state.lock"
+    local i=0
+    while ! mkdir "$lockdir" 2>/dev/null; do
+        sleep 0.05
+        i=$((i + 1))
+        if [ "$i" -gt 300 ]; then
+            rm -rf "$lockdir"
+        fi
+    done
+}
+
+state_unlock() {
+    rm -rf "$OVERLORD_DIR/.state.lock"
+}
+
 state_set() {
     # state_set <task> <key> <value>
     state_init
-    local task="$1" key="$2" val="$3" tmp="$OVERLORD_STATE.tmp"
+    local task="$1" key="$2" val="$3" tmp
+    tmp="$(mktemp "$OVERLORD_STATE.tmp.XXXXXX")"
+    state_lock
     awk -v hdr="## $task" -v key="$key" -v val="$val" -v now="$(now_iso)" '
         function endblock() {
             if (inblock) {
@@ -199,6 +257,8 @@ state_set() {
             }
         }
     ' "$OVERLORD_STATE" > "$tmp" && mv "$tmp" "$OVERLORD_STATE"
+    rm -f "$tmp"
+    state_unlock
 }
 
 # state_get <task> <key> — print value or nothing if absent.

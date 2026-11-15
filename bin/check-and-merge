@@ -21,6 +21,25 @@ set -u -o pipefail
 
 . "$(dirname "$0")/../lib/common.sh"
 
+merge_lock() {
+    local lockdir="$OVERLORD_DIR/.merge.lock"
+    local i=0
+    while ! mkdir "$lockdir" 2>/dev/null; do
+        sleep 0.1
+        i=$((i + 1))
+        if [ "$i" -gt 600 ]; then
+            warn "breaking stale merge lock at $lockdir"
+            rm -rf "$lockdir"
+        fi
+    done
+    trap 'merge_unlock' EXIT INT TERM
+}
+
+merge_unlock() {
+    trap - EXIT INT TERM
+    rm -rf "$OVERLORD_DIR/.merge.lock"
+}
+
 refuse() { # refuse <reason> — a gate refusal, distinct from an error (exit 2)
     printf 'refused: %s\n' "$*" >&2
     exit 2
@@ -169,16 +188,21 @@ else
 fi
 
 # ---- 4. Merge into the base branch ----------------------------------------
+merge_lock
+
 current="$(git -C "$OVERLORD_PROJECT_DIR" rev-parse --abbrev-ref HEAD)"
 if [ "$current" != "$OVERLORD_BASE_BRANCH" ]; then
     if [ -n "$(git -C "$OVERLORD_PROJECT_DIR" status --porcelain)" ]; then
         state_set "$task" next_step "merge gate: approved, but $OVERLORD_PROJECT_DIR is on '$current' with uncommitted changes — commit or stash, checkout $OVERLORD_BASE_BRANCH, rerun"
+        merge_unlock
         die "$OVERLORD_PROJECT_DIR is on branch '$current' with uncommitted changes.
 Commit or stash there, 'git checkout $OVERLORD_BASE_BRANCH', then re-run: bin/check-and-merge $task"
     fi
     info "==> switching $OVERLORD_PROJECT_DIR from '$current' to '$OVERLORD_BASE_BRANCH' for the merge"
-    git -C "$OVERLORD_PROJECT_DIR" checkout "$OVERLORD_BASE_BRANCH" > "$run_dir/merge.log" 2>&1 \
-        || die "git checkout $OVERLORD_BASE_BRANCH failed (see $run_dir/merge.log)"
+    if ! git -C "$OVERLORD_PROJECT_DIR" checkout "$OVERLORD_BASE_BRANCH" > "$run_dir/merge.log" 2>&1; then
+        merge_unlock
+        die "git checkout $OVERLORD_BASE_BRANCH failed (see $run_dir/merge.log)"
+    fi
 fi
 
 info "==> merging $head_sha ($branch) into $OVERLORD_BASE_BRANCH (never pushes)"
@@ -187,17 +211,36 @@ info "==> merging $head_sha ($branch) into $OVERLORD_BASE_BRANCH (never pushes)"
 # approval covered, so it is the same stale-review refusal as above.
 if [ "$(git -C "$OVERLORD_PROJECT_DIR" rev-parse "$branch")" != "$head_sha" ]; then
     state_set "$task" next_step "merge gate refused: $branch moved during the gate — re-run bin/review $task on the new head"
+    merge_unlock
     refuse "branch $branch moved while the gate was running (expected $head_sha, now $(git -C "$OVERLORD_PROJECT_DIR" rev-parse "$branch")).
 Re-run bin/review $task on the new head, then bin/check-and-merge $task again."
 fi
+
+base_before_merge="$(git -C "$OVERLORD_PROJECT_DIR" rev-parse HEAD)"
 if ! git -C "$OVERLORD_PROJECT_DIR" merge --no-edit "$head_sha" >> "$run_dir/merge.log" 2>&1; then
     git -C "$OVERLORD_PROJECT_DIR" merge --abort >> "$run_dir/merge.log" 2>&1
     state_set "$task" next_step "merge conflict: resolve by hand in $OVERLORD_PROJECT_DIR (merge mt branch manually), or rebase $branch onto $OVERLORD_BASE_BRANCH"
+    merge_unlock
     die "merge conflict — merge aborted cleanly, nothing changed on $OVERLORD_BASE_BRANCH.
 The branch $branch and worktree $worktree are untouched.
 Resolve by hand: cd $OVERLORD_PROJECT_DIR && git merge $branch"
 fi
 tail -3 "$run_dir/merge.log" 2>/dev/null || true
+
+# ---- 4b. Integrated test: verify combined result on the base branch --------
+info "==> verifying combined result on $OVERLORD_BASE_BRANCH"
+combined_rc=0
+( cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_TEST_TIMEOUT" "$OVERLORD_TEST_CMD" ) \
+    2>&1 | tee "$run_dir/tests-combined.log" || combined_rc=$?
+
+if [ "$combined_rc" -ne 0 ]; then
+    git -C "$OVERLORD_PROJECT_DIR" reset --hard "$base_before_merge" >> "$run_dir/merge.log" 2>&1
+    state_set "$task" tests "fail (combined)"
+    state_set "$task" next_step "integrated tests failed on $OVERLORD_BASE_BRANCH — merge rolled back"
+    merge_unlock
+    die "integrated tests failed on $OVERLORD_BASE_BRANCH after merging $branch (exit $combined_rc) — merge rolled back.
+The worktree is untouched at $worktree. Check log: $run_dir/tests-combined.log"
+fi
 
 # ---- 5. Clean up the worktree (branch is kept as the record) ---------------
 if git -C "$OVERLORD_PROJECT_DIR" worktree remove "$worktree" >> "$run_dir/merge.log" 2>&1; then
@@ -211,6 +254,8 @@ state_set "$task" status "merged"
 state_set "$task" last_step "merge"
 state_set "$task" next_step "none (merged; branch $branch kept — delete with: git -C \"$OVERLORD_PROJECT_DIR\" branch -d $branch)"
 state_set "$task" worktree "(removed: $worktree)"
+
+merge_unlock
 
 echo
 info "merged $branch into $OVERLORD_BASE_BRANCH. NOT pushed — push yourself when ready:"

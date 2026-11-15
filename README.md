@@ -250,12 +250,14 @@ engine and tests.
 
 - Worker agents run with **edit permissions inside one isolated worktree** and
   are instructed to commit and stop; lanes never merge, never push.
-- **Worktrees isolate files, not credentials** — so worker and reviewer agents
-  start with a scrubbed environment: secret-shaped variables (`*_TOKEN`,
-  `*_KEY`, `*_SECRET`, `DATABASE_URL`, `AWS_*`, `STRIPE_*`) are unset before
-  the agent runs, with `OVERLORD_PASS_ENV="VAR1 VAR2"` as the explicit
-  allowlist. Keep production credentials out of worker shells and give a lane
-  its own least-privilege token when it needs one
+- **Worktrees isolate files, not credentials.** Environment filtering is not a
+  sandbox — for production secrets run the kit inside a container/VM or a
+  separate user with no credentials. Worker, reviewer, and final test commands
+  all run in a scrubbed environment starting from an empty env (`env -i`) plus
+  an explicit allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `TERM`, `TMPDIR`,
+  configurable via `OVERLORD_ALLOW_ENV`, plus any needed variables in
+  `OVERLORD_PASS_ENV`). Keep production credentials out of worker shells
+  entirely and give a lane its own least-privilege token when it needs one
   ([HOW-WE-WORK.md §1](HOW-WE-WORK.md#1-the-shape-coordinator-lanes-reviewers)).
 - **Approvals bind to the exact commit.** `bin/review` records the commit SHA
   it reviewed; the merge gate refuses a stale or missing review and merges

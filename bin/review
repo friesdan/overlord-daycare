@@ -21,7 +21,7 @@ bin/check-and-merge will not merge any other commit on that approval.
 
 The reviewer should be a DIFFERENT model/CLI than the worker — an independent
 reviewer catches blind spots the builder shares (HOW-WE-WORK.md §1). Like the
-worker, it runs with secret-shaped environment variables scrubbed.
+worker, it runs in a scrubbed environment (env -i + allowlist).
 
 Exit codes: 0 = VERDICT: CLEAN, 2 = VERDICT: FINDINGS, 1 = error
 (bad task, empty diff, reviewer failed, or no recognizable verdict line).
@@ -86,10 +86,9 @@ export OVERLORD_TASK="$task"
 
 info "==> running reviewer on $branch ($commit): $OVERLORD_REVIEWER_CMD"
 info "    (output: $run_dir/review.md; timeout: ${OVERLORD_REVIEWER_TIMEOUT}s)"
-info "    env: secret-shaped variables scrubbed like the worker's (OVERLORD_PASS_ENV to allow)"
+info "    env: scrubbed with empty env (env -i) + allowlist like the worker"
 rc=0
-( lane_scrub_env
-  cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_REVIEWER_TIMEOUT" "$OVERLORD_REVIEWER_CMD" ) \
+( cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_REVIEWER_TIMEOUT" "$OVERLORD_REVIEWER_CMD" ) \
     2>&1 | tee "$run_dir/review.md" || rc=$?
 
 state_set "$task" last_step "review"

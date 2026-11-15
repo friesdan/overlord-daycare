@@ -23,10 +23,9 @@ record the run under .overlord/runs/<task-name>/.
 
 Environment overrides (see ./init): OVERLORD_WORKER_CMD, OVERLORD_WORKER_TIMEOUT, ...
 The worker command may reference "$PROMPT", "$PROMPT_FILE", "$OVERLORD_WORKTREE".
-The worker runs with a scrubbed environment: secret-shaped variables
-(*_TOKEN, *_KEY, *_SECRET, DATABASE_URL, AWS_*, STRIPE_*) are unset first —
-worktrees isolate files, not credentials. List exceptions (space-separated)
-in OVERLORD_PASS_ENV to pass a variable through.
+The worker runs with a scrubbed environment: starting from an empty env
+(env -i) plus an explicit allowlist (PATH, HOME, LANG, LC_*, TERM, TMPDIR,
+and OVERLORD_PASS_ENV) — worktrees isolate files, not credentials.
 Never pushes. Exits non-zero if the worker command fails or commits nothing.
 EOF
 }
@@ -109,11 +108,9 @@ export OVERLORD_TASK="$task"
 
 info "==> running worker (in $worktree): $OVERLORD_WORKER_CMD"
 info "    (log: $run_dir/worker.log; timeout: ${OVERLORD_WORKER_TIMEOUT}s)"
-info "    env: secret-shaped variables (\\*_TOKEN, \\*_KEY, \\*_SECRET, DATABASE_URL,"
-info "    AWS_*, STRIPE_*) unset before the worker starts; allowlist: OVERLORD_PASS_ENV${OVERLORD_PASS_ENV:+ (set: $OVERLORD_PASS_ENV)})"
+info "    env: scrubbed with empty env (env -i) + allowlist (${OVERLORD_ALLOW_ENV:-PATH HOME ...}${OVERLORD_PASS_ENV:+; pass: $OVERLORD_PASS_ENV})"
 rc=0
-( lane_scrub_env
-  cd "$worktree" && run_bounded "$OVERLORD_WORKER_TIMEOUT" "$OVERLORD_WORKER_CMD" ) \
+( cd "$worktree" && run_bounded "$OVERLORD_WORKER_TIMEOUT" "$OVERLORD_WORKER_CMD" ) \
     2>&1 | tee "$run_dir/worker.log" || rc=$?
 
 state_set "$task" status "open"

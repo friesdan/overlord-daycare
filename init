@@ -41,7 +41,7 @@ EOF
 }
 
 DEMO=0
-PROJECT="" BASE="" TESTCMD="" WORKER="" REVIEWER="" APPROVAL="" WTROOT=""
+PROJECT="" BASE="" TESTCMD="" WORKER="" REVIEWER="" APPROVAL="" WTROOT="" ALLOW_ENV=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,6 +53,7 @@ while [ $# -gt 0 ]; do
         --reviewer) shift; REVIEWER="${1:-}" ;;
         --approval) shift; APPROVAL="${1:-}" ;;
         --worktree-root) shift; WTROOT="${1:-}" ;;
+        --allow-env) shift; ALLOW_ENV="${1:-}" ;;
         --force) : ;;
         --help|-h) usage; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
@@ -88,19 +89,21 @@ detect_base() {
 }
 
 # ---- Existing config provides defaults (idempotent re-runs) ----------------
-OLD_PROJECT="" OLD_TESTCMD="" OLD_WORKER="" OLD_REVIEWER="" OLD_APPROVAL=""
+OLD_PROJECT="" OLD_TESTCMD="" OLD_WORKER="" OLD_REVIEWER="" OLD_APPROVAL="" OLD_ALLOW=""
 if [ -f "$OVERLORD_CONFIG" ]; then
     OLD_PROJECT="$(  sed -n "s/^OVERLORD_PROJECT_DIR='\(.*\)'$/\1/p" "$OVERLORD_CONFIG" | tail -1)"
     OLD_TESTCMD="$(  sed -n "s/^OVERLORD_TEST_CMD='\(.*\)'$/\1/p"       "$OVERLORD_CONFIG" | tail -1)"
     OLD_WORKER="$(   sed -n "s/^OVERLORD_WORKER_CMD='\(.*\)'$/\1/p"     "$OVERLORD_CONFIG" | tail -1)"
     OLD_REVIEWER="$( sed -n "s/^OVERLORD_REVIEWER_CMD='\(.*\)'$/\1/p"   "$OVERLORD_CONFIG" | tail -1)"
     OLD_APPROVAL="$( sed -n "s/^OVERLORD_APPROVAL_RULE='\(.*\)'$/\1/p"  "$OVERLORD_CONFIG" | tail -1)"
+    OLD_ALLOW="$(    sed -n "s/^OVERLORD_ALLOW_ENV='\(.*\)'$/\1/p"      "$OVERLORD_CONFIG" | tail -1)"
 fi
-[ -n "$PROJECT"  ] || PROJECT="${OVERLORD_PROJECT_DIR:-$OLD_PROJECT}"
-[ -n "$TESTCMD"  ] || TESTCMD="${OVERLORD_TEST_CMD:-$OLD_TESTCMD}"
-[ -n "$WORKER"   ] || WORKER="${OVERLORD_WORKER_CMD:-$OLD_WORKER}"
-[ -n "$REVIEWER" ] || REVIEWER="${OVERLORD_REVIEWER_CMD:-$OLD_REVIEWER}"
-[ -n "$APPROVAL" ] || APPROVAL="${OVERLORD_APPROVAL_RULE:-$OLD_APPROVAL}"
+[ -n "$PROJECT"   ] || PROJECT="${OVERLORD_PROJECT_DIR:-$OLD_PROJECT}"
+[ -n "$TESTCMD"   ] || TESTCMD="${OVERLORD_TEST_CMD:-$OLD_TESTCMD}"
+[ -n "$WORKER"    ] || WORKER="${OVERLORD_WORKER_CMD:-$OLD_WORKER}"
+[ -n "$REVIEWER"  ] || REVIEWER="${OVERLORD_REVIEWER_CMD:-$OLD_REVIEWER}"
+[ -n "$APPROVAL"  ] || APPROVAL="${OVERLORD_APPROVAL_RULE:-$OLD_APPROVAL}"
+[ -n "$ALLOW_ENV" ] || ALLOW_ENV="${OVERLORD_ALLOW_ENV:-$OLD_ALLOW}"
 
 # ---- Demo mode: build the throwaway project repo ----------------------------
 if [ "$DEMO" -eq 1 ]; then
@@ -238,10 +241,11 @@ mkdir -p "$OVERLORD_DIR"
     echo "OVERLORD_APPROVAL_RULE=$(shell_quote "$APPROVAL")"
     echo "# Where task worktrees live (outside both repos)."
     echo "OVERLORD_WORKTREE_ROOT=$(shell_quote "$WTROOT")"
-    echo "# Credentials: worktrees isolate files, not secrets, so worker and reviewer"
-    echo "# lanes start with secret-shaped env vars unset (*_TOKEN, *_KEY, *_SECRET,"
-    echo "# DATABASE_URL, AWS_*, STRIPE_*). Space-separated allowlist of variables a"
-    echo "# lane genuinely needs, e.g. OVERLORD_PASS_ENV='ANTHROPIC_API_KEY HTTP_PROXY'."
+    echo "# Credentials: worktrees isolate files, not secrets. Commands run with an"
+    echo "# explicit environment allowlist starting from an empty env (env -i)."
+    echo "# Safe default allowlist: PATH HOME LANG LC_* TERM TMPDIR"
+    echo "OVERLORD_ALLOW_ENV=$(shell_quote "${ALLOW_ENV:-PATH HOME LANG LC_* TERM TMPDIR}")"
+    echo "# Additional pass-through variables a task or test genuinely needs (space-separated)."
     echo "OVERLORD_PASS_ENV=$(shell_quote "${OVERLORD_PASS_ENV:-}")"
     echo "# Time bounds, seconds (no bound if 'timeout' is unavailable)."
     echo "OVERLORD_WORKER_TIMEOUT='1800'"

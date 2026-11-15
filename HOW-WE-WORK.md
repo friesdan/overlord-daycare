@@ -22,10 +22,12 @@ nothing for secrets: a shell profile that exports a live key hands it to every
 lane, and one unmocked test run can hit the production database.
 
 - **Scrub the lane environment.** Every lane launcher (the kit's `bin/worker`
-  and `bin/review`) unsets secret-shaped variables — `*_TOKEN`, `*_KEY`,
-  `*_SECRET`, `DATABASE_URL`, `AWS_*`, `STRIPE_*` — before the agent starts.
-  `OVERLORD_PASS_ENV="VAR1 VAR2"` is the explicit allowlist for the few
-  variables a lane genuinely needs (a CLI's own API key auth, a proxy).
+  and `bin/review`) and the merge gate's test step run in a scrubbed
+  environment starting from an empty env (`env -i`) plus an explicit
+  allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, plus
+  `OVERLORD_PASS_ENV`). Environment filtering is not a sandbox — for
+  production secrets run the kit inside a container/VM or a separate user
+  with no credentials.
 - **Keep production credentials out of worker shells entirely.** If a lane
   must touch a service, it gets its own token for that — never the production
   one, and never a shared one.
