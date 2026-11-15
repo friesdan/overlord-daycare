@@ -13,6 +13,17 @@ run as `bin/pace`) that implements everything described here over a plain JSON
 file — a teaching artifact and a starting point, not a product. All numbers in
 this guide and in the repo are synthetic.
 
+**Honest scope: the engine paces from numbers you supply; it collects
+nothing.** `bin/pace` reads a meters file — `bin/pace my-meters.json`, schema
+and worked examples in [`pacing/README.md`](../pacing/README.md), synthetic
+sample in [`pacing/meters.example.json`](../pacing/meters.example.json) — and
+turns those numbers into lane advice. It does **not** read your providers'
+live subscription usage: no API calls, no logins, no scraping. Collecting the
+real numbers is yours to plug in (official usage APIs or files you export
+yourself — see [Collecting meters honestly](#collecting-meters-honestly)
+below), refreshed into the meters file as often as your heartbeat needs. This
+kit deliberately ships no collector.
+
 ## The problem pacing solves
 
 Subscription allowances reset on a clock — every 5 hours, daily, weekly,

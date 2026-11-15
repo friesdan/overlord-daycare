@@ -14,6 +14,26 @@ Why: a coordinator that stops to code stops coordinating — while it is heads-d
 
 The one exception: the coordinator may make a one-to-three-line mechanical unblocker itself (a missing generated line, taking one side verbatim in a conflict). Anything larger, including long investigations, is lane work with a diagnosis brief.
 
+### Credentials: worktrees isolate files, not secrets
+
+A git worktree gives a lane its own files — and the same environment, keychain,
+and config directories as the shell that launched it. Isolation of files buys
+nothing for secrets: a shell profile that exports a live key hands it to every
+lane, and one unmocked test run can hit the production database.
+
+- **Scrub the lane environment.** Every lane launcher (the kit's `bin/worker`
+  and `bin/review`) unsets secret-shaped variables — `*_TOKEN`, `*_KEY`,
+  `*_SECRET`, `DATABASE_URL`, `AWS_*`, `STRIPE_*` — before the agent starts.
+  `OVERLORD_PASS_ENV="VAR1 VAR2"` is the explicit allowlist for the few
+  variables a lane genuinely needs (a CLI's own API key auth, a proxy).
+- **Keep production credentials out of worker shells entirely.** If a lane
+  must touch a service, it gets its own token for that — never the production
+  one, and never a shared one.
+- **Per-lane, least-privilege tokens.** Scope each token to the lane's job
+  (read-only where possible), rotate it with the lane, and revoke it when the
+  task merges. A token a lane cannot live without is a credential it should
+  not have.
+
 ## 2. Compute: a usage dashboard decides how many lanes run
 
 - A small local service polls every subscription and plan and publishes one machine-readable answer per pool: how many lanes may run right now, and why.
@@ -25,7 +45,7 @@ Why: allowances reset on a clock. Too slow wastes allowance at reset; too fast r
 
 Two supporting habits: periodically compare assumed cost per lane-hour with observed burn from real runs and log the gap (measuring turns a guess into a number); and keep a durable ledger of what each reset left unused, so plan decisions become evidence-based.
 
-This package ships a written design guide ([`docs/pacing.md`](docs/pacing.md)) and a tiny dependency-free reference engine ([`pacing/`](pacing/), wrapped as `bin/pace`) that turns a meters file into exactly that one answer per pool — a starting point to grow into a live dashboard, not a requirement for running the starter loop.
+This package ships a written design guide ([`docs/pacing.md`](docs/pacing.md)) and a tiny dependency-free reference engine ([`pacing/`](pacing/), wrapped as `bin/pace`) that turns a meters file you supply into exactly that one answer per pool. The engine collects nothing: reading live subscription usage (through official APIs or your own exports) is a collector you plug in, not part of the kit — a starting point to grow into a live dashboard, not a requirement for running the starter loop.
 
 ## The head overlord: which model and what effort
 

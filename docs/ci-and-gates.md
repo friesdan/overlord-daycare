@@ -73,6 +73,12 @@ main branch can silently drop another change's logic with *no textual
 conflict*, so an old green review plus a fresh build is not green. Stale is
 stale, even when the diff looks tiny.
 
+The starter kit enforces this at its merge gate: `bin/review` records the
+commit SHA it reviewed, and `bin/check-and-merge` refuses to merge (exit 2)
+unless that SHA is exactly the branch head — then merges that exact SHA,
+re-verified just before the merge. A commit added after a CLEAN review never
+inherits it.
+
 ## Independent review, then severity triage
 
 The review that gates a merge comes from a **different model family than the
@@ -125,7 +131,8 @@ half-checked changes. The merging is done by a script for the same reason as
 every other layer: a script cannot forget a step of the checklist, cannot be
 persuaded to merge "just this once," and cannot play favorites about what
 merges next. The starter kit's merge gate — tests re-run plus a CLEAN
-independent verdict — is the smallest version of that script.
+independent verdict bound to the exact head — is the smallest version of that
+script.
 
 ## The spiral breaker
 
