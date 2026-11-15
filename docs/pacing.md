@@ -19,10 +19,16 @@ and worked examples in [`pacing/README.md`](../pacing/README.md), synthetic
 sample in [`pacing/meters.example.json`](../pacing/meters.example.json) — and
 turns those numbers into lane advice. It does **not** read your providers'
 live subscription usage: no API calls, no logins, no scraping. Collecting the
-real numbers is yours to plug in (official usage APIs or files you export
-yourself — see [Collecting meters honestly](#collecting-meters-honestly)
-below), refreshed into the meters file as often as your heartbeat needs. This
-kit deliberately ships no collector.
+real numbers is a collector you plug in — see
+[Collecting meters honestly](#collecting-meters-honestly) below for the rule,
+[`collecting-usage.md`](collecting-usage.md) for how to read each source kind
+(a CLI status command, the dashboard page, response headers, a usage
+endpoint), [`prompts/build-collectors.md`](prompts/build-collectors.md) for
+the instruction that has your head overlord build them, and
+[`collectors/example-collector/`](../collectors/example-collector/) for an
+offline working example. The engine's own staleness rule (idea 5) is what
+makes a collector safe to run unattended: a reading older than N heartbeats
+is refused, whatever it says.
 
 ## The problem pacing solves
 
@@ -160,6 +166,15 @@ silent shrinkage of every pool.
 If a meter can't be read — collector failed, field missing, response
 malformed, reading stale past the window end — the advice is **0 lanes**, with
 the reason saying why. Never `0% used`. Never "available".
+
+**Stale counts as unreadable.** A reading older than N heartbeats
+(`staleAfterHeartbeats` × `heartbeatMinutes`, default 3 × 30 min, configurable
+per document and per pool) is refused the same way: band `stale`, 0 lanes,
+"not pacing on old numbers". This is the failure you don't see — a collector
+that dies silently leaves yesterday's perfectly healthy-looking numbers in the
+file, and without `collectedAt` on every read, nothing would ever notice.
+One deliberate exception: **confirmed exhaustion** (idea 6) is a recorded
+fact, not a reading, so it outlives a stale meter.
 
 **Why:** this dashboard's consumer is an automated coordinator that acts on
 the answer *immediately*. A false "plenty left" is the single most expensive
@@ -318,6 +333,14 @@ as a research question, not a collector. If a pool can only be read
 dishonestly or not at all, it reads `unknown` — which is safe (idea 5), and
 the ledger will tell you if that pool was worth reading anyway.
 
+How to actually do it — per source kind, what to record, how a broken source
+writes `unknown`, and how the heartbeat refreshes it all — is written down in
+[`collecting-usage.md`](collecting-usage.md). You don't have to build the
+collectors yourself: [`prompts/build-collectors.md`](prompts/build-collectors.md)
+is the instruction to hand your head overlord, and
+[`collectors/example-collector/`](../collectors/example-collector/) is an
+offline working example (fixture in, meters format out) to model each one on.
+
 Privacy follows from the same rule: your meters file contains your spending
 patterns. Keep it out of the repo (the reference engine defaults to a
 synthetic example file for exactly this reason), and keep real plan prices out
@@ -330,17 +353,22 @@ bin/pace                        # table from pacing/meters.example.json (synthet
 bin/pace my-meters.json         # your real meters, same JSON shape
 bin/pace my-meters.json --json  # machine-readable, for the coordinator agent
 node --test pacing/             # unit tests (on/behind/ahead of pace, unknown,
-                                # exhausted, reserve, toggles, caps, CLI)
+                                # stale, exhausted, reserve, toggles, caps, CLI)
 ```
 
 Everything above is implemented in [`pacing/pace.mjs`](../pacing/pace.mjs)
 (dependency-free Node ≥ 20 ESM): pools as routes, used%/window meters, the
 pace ratio with the early-window guard, the two-term lane formula with the
-catch-up horizon, fail-closed unknowns, confirmed-vs-flaky exhaustion,
-reserves, owner modes (`even` / `burn-harder` / `paused`), pool and host caps.
-Calibration and the reset-waste ledger are habits around the engine — see
+catch-up horizon, fail-closed unknowns, the staleness rule
+(`collectedAt` + `staleAfterHeartbeats` × `heartbeatMinutes`),
+confirmed-vs-flaky exhaustion, reserves, owner modes (`even` /
+`burn-harder` / `paused`), pool and host caps. Calibration and the
+reset-waste ledger are habits around the engine — see
 [`pacing/README.md`](../pacing/README.md) for the meters schema and how to
-feed it real numbers.
+feed it real numbers (collectors live in
+[`collecting-usage.md`](collecting-usage.md); a visual for the advice output
+sits at [`examples/pacing-meter/`](../examples/pacing-meter/) — open it in a
+browser).
 
 To grow beyond the reference: keep the engine pure (numbers in, advice out,
 clock injected), publish the advice with its reason on every read, and let the

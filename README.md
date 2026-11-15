@@ -185,7 +185,8 @@ add pieces in this order ([HOW-WE-WORK.md §11](HOW-WE-WORK.md#11-start-small-bo
 
 - **Pacing dashboard** — feed real subscription meters to the bundled engine
   and let it tell the coordinator how many lanes each pool may run
-  ([docs/pacing.md](docs/pacing.md)).
+  ([docs/pacing.md](docs/pacing.md); collecting them:
+  [docs/collecting-usage.md](docs/collecting-usage.md)).
 - **Heartbeat schedule** — a ~30-minute prompt that only points at
   `.overlord/HEARTBEAT.md` ([§6](HOW-WE-WORK.md#6-the-heartbeat-and-watchers)).
 - **Compaction hooks** — snapshot state before summarizing, re-inject resume
@@ -222,8 +223,23 @@ measured cost per lane-hour, and host capacity. An unreadable meter advises
 JSON meters file (default: the synthetic `pacing/meters.example.json`; the
 schema and how to feed it real numbers are in
 [`pacing/README.md`](pacing/README.md)). It does not read your providers' live
-subscription usage — a collector that does (through official APIs or your own
-exported data only) is yours to plug in; the kit deliberately ships none.
+subscription usage itself — a collector does that, and most plans have no
+official usage API, so usage shows up in a CLI status command, a dashboard
+page, or response headers.
+[`docs/collecting-usage.md`](docs/collecting-usage.md) explains how to read
+each kind honestly and what to record (percent used, reset time, time
+collected — and "unknown", never a guess, when a source breaks);
+[`docs/prompts/build-collectors.md`](docs/prompts/build-collectors.md) is the
+instruction to hand your head overlord so it builds a collector for every plan
+you pay for; [`collectors/example-collector/`](collectors/example-collector/)
+is a working offline example to copy. A reading older than N heartbeats is
+refused outright: the output says `stale` instead of pacing on old numbers.
+
+Want to *see* the advice? [`examples/pacing-meter`](examples/pacing-meter/) —
+open in a browser. One self-contained page (inline everything, no network)
+that renders the engine's `--json` output as one meter card per plan: a used
+bar, a where-you-should-be-by-now pace marker, the reset countdown, and an
+on-pace / over / under label.
 
 [`docs/pacing.md`](docs/pacing.md) explains every idea and *why* it is there,
 with a worked example and an honest-collection rule (official APIs or your own
@@ -259,6 +275,7 @@ tests on Node's built-in runner:
 ```bash
 tests/smoke.sh              # also verifies shellcheck cleanliness of the scripts
 node --test pacing/         # pace engine unit tests (Node ≥ 20)
+node --test tests/          # example-collector tests (smoke.sh runs these too)
 ```
 
 MIT license — see [LICENSE](LICENSE).

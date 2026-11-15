@@ -1,0 +1,10 @@
+Example CLI — plan status (SYNTHETIC fixture)
+
+This is a stand-in for whatever a provider's status command prints. Real
+formats differ and change between versions: parse yours from the provider's
+own docs, pin it loosely, and fall to unknown the moment a field is missing.
+
+Plan          example-weekly
+Window        2026-11-09T12:00:00Z -> 2026-11-16T12:00:00Z
+Used          40%
+Resets at     2026-11-16T12:00:00Z

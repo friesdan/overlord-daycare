@@ -1,0 +1,7 @@
+Example CLI — plan status (SYNTHETIC fixture — a broken source)
+
+The CLI updated itself and its output no longer contains any field this
+collector parses. Nothing here is a number; the collector must record
+unknown, never a guess.
+
+Allowance    fine, apparently

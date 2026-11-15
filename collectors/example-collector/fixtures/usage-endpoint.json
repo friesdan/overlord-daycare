@@ -1,0 +1,5 @@
+{
+  "plan": "example-monthly",
+  "usage": { "usedPercent": 44 },
+  "window": { "start": "2026-11-01T00:00:00Z", "end": "2026-12-01T00:00:00Z" }
+}
