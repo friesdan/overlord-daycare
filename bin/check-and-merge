@@ -10,10 +10,21 @@
 # yes). On approval: merge the task branch into the base branch (a real merge
 # — fast-forward only when possible; aborts on conflict), remove the worktree,
 # keep the branch. NEVER pushes. Updates STATE.md.
+#
+# Approvals bind to the exact commit: bin/review records the commit SHA it
+# reviewed, and this gate refuses to merge unless that SHA is the exact head
+# of the branch being merged. A later commit never inherits an old CLEAN
+# verdict — a stale or missing review refuses with exit 2, and the merge
+# itself merges that exact SHA.
 set -u -o pipefail
 # shellcheck disable=SC1091  # path is relative to this script
 
 . "$(dirname "$0")/../lib/common.sh"
+
+refuse() { # refuse <reason> — a gate refusal, distinct from an error (exit 2)
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+}
 
 usage() {
     cat <<'EOF'
@@ -26,6 +37,11 @@ tests / review verdict / diffstat, then decides:
   approval rule 'auto'  merge with no prompt, but ONLY if tests pass AND
                         the review verdict is CLEAN
   otherwise             ask "Merge into <base>? [y/N]"
+
+The review must be bound to the exact commit being merged: bin/review records
+the commit SHA it reviewed, and a stale review (branch has moved on) or a
+missing one refuses with exit 2 — re-run bin/review on the new head. The
+merge itself merges that exact SHA, re-verified just before it happens.
 
 Merging never pushes. The worktree is removed after a successful merge; the
 mt/<task> branch is kept as a record (delete it yourself when done).
@@ -70,14 +86,20 @@ tests_rc=0
 if [ "$tests_rc" -eq 0 ]; then tests="pass"; else tests="FAIL (exit $tests_rc)"; fi
 
 # ---- 2. Review verdict + diffstat ------------------------------------------
+head_sha="$(git -C "$OVERLORD_PROJECT_DIR" rev-parse "$branch")"
+review_sha="$(state_get "$task" review_commit)"
+review_branch="$(state_get "$task" review_branch)"
 verdict="$(state_get "$task" review_verdict)"
 [ -n "$verdict" ] || verdict="(none — run bin/review $task)"
+review_short="(none yet)"
+[ -n "$review_sha" ] && review_short="${review_sha:0:12}"
 diffstat="$(git -C "$OVERLORD_PROJECT_DIR" diff --stat "$OVERLORD_BASE_BRANCH...$branch" | tail -1)"
 
 echo
 info "================= merge gate: $task ================="
 printf '  tests   : %s\n' "$tests"
 printf '  review  : %s\n' "$verdict"
+printf '  commit  : %s (reviewed: %s)\n' "${head_sha:0:12}" "$review_short"
 printf '  diff    : %s\n' "${diffstat:-<empty>}"
 printf '  branch  : %s -> merge into %s\n' "$branch" "$OVERLORD_BASE_BRANCH"
 info "====================================================="
@@ -89,6 +111,24 @@ if [ "$tests" != "pass" ]; then
 The worktree is untouched at $worktree"
 fi
 state_set "$task" tests "pass"
+
+# ---- 2b. The review must be bound to the exact commit being merged ----------
+# bin/review records the SHA (and branch) it reviewed. An approval never
+# carries across a new commit: stale or missing review -> refuse, whatever
+# the approval rule (re-run bin/review; it is cheap next to a bad merge).
+if [ -z "$review_sha" ]; then
+    state_set "$task" next_step "merge gate refused: no review recorded for ${branch} at ${head_sha:0:12} — run bin/review $task"
+    refuse "no review recorded for $task.
+bin/review $task must run on the exact commit before it can merge —
+approvals bind to a commit, not to a branch."
+fi
+if [ "$review_sha" != "$head_sha" ]; then
+    state_set "$task" next_step "merge gate refused: review is for ${review_sha:0:12} but $branch is at ${head_sha:0:12} — re-run bin/review $task"
+    refuse "stale review for $task.
+The recorded verdict (branch ${review_branch:-?}, commit ${review_sha:0:12}) does not
+apply to the current head of $branch (${head_sha:0:12}): commits were added after the
+review. A new commit cannot inherit an old approval — re-run: bin/review $task"
+fi
 
 # ---- 3. The approval decision ----------------------------------------------
 if [ "$OVERLORD_APPROVAL_RULE" != "auto" ] && [ "$yes_flag" -ne 1 ]; then
@@ -141,8 +181,16 @@ Commit or stash there, 'git checkout $OVERLORD_BASE_BRANCH', then re-run: bin/ch
         || die "git checkout $OVERLORD_BASE_BRANCH failed (see $run_dir/merge.log)"
 fi
 
-info "==> merging $branch into $OVERLORD_BASE_BRANCH (never pushes)"
-if ! git -C "$OVERLORD_PROJECT_DIR" merge --no-edit "$branch" >> "$run_dir/merge.log" 2>&1; then
+info "==> merging $head_sha ($branch) into $OVERLORD_BASE_BRANCH (never pushes)"
+# Merge the exact reviewed commit, and only if the branch still points at it —
+# a commit landing between the gate summary and the merge changes what the
+# approval covered, so it is the same stale-review refusal as above.
+if [ "$(git -C "$OVERLORD_PROJECT_DIR" rev-parse "$branch")" != "$head_sha" ]; then
+    state_set "$task" next_step "merge gate refused: $branch moved during the gate — re-run bin/review $task on the new head"
+    refuse "branch $branch moved while the gate was running (expected $head_sha, now $(git -C "$OVERLORD_PROJECT_DIR" rev-parse "$branch")).
+Re-run bin/review $task on the new head, then bin/check-and-merge $task again."
+fi
+if ! git -C "$OVERLORD_PROJECT_DIR" merge --no-edit "$head_sha" >> "$run_dir/merge.log" 2>&1; then
     git -C "$OVERLORD_PROJECT_DIR" merge --abort >> "$run_dir/merge.log" 2>&1
     state_set "$task" next_step "merge conflict: resolve by hand in $OVERLORD_PROJECT_DIR (merge mt branch manually), or rebase $branch onto $OVERLORD_BASE_BRANCH"
     die "merge conflict — merge aborted cleanly, nothing changed on $OVERLORD_BASE_BRANCH.

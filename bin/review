@@ -15,10 +15,13 @@ usage() {
 usage: bin/review <task-name>
 
 Run the reviewer AI command on the full diff base...mt/<task-name> and save
-its output to .overlord/runs/<task-name>/review.md.
+its output to .overlord/runs/<task-name>/review.md. The verdict is recorded
+in STATE.md bound to the exact commit SHA (and branch) it was rendered on;
+bin/check-and-merge will not merge any other commit on that approval.
 
 The reviewer should be a DIFFERENT model/CLI than the worker — an independent
-reviewer catches blind spots the builder shares (HOW-WE-WORK.md §1).
+reviewer catches blind spots the builder shares (HOW-WE-WORK.md §1). Like the
+worker, it runs with secret-shaped environment variables scrubbed.
 
 Exit codes: 0 = VERDICT: CLEAN, 2 = VERDICT: FINDINGS, 1 = error
 (bad task, empty diff, reviewer failed, or no recognizable verdict line).
@@ -83,8 +86,10 @@ export OVERLORD_TASK="$task"
 
 info "==> running reviewer on $branch ($commit): $OVERLORD_REVIEWER_CMD"
 info "    (output: $run_dir/review.md; timeout: ${OVERLORD_REVIEWER_TIMEOUT}s)"
+info "    env: secret-shaped variables scrubbed like the worker's (OVERLORD_PASS_ENV to allow)"
 rc=0
-( cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_REVIEWER_TIMEOUT" "$OVERLORD_REVIEWER_CMD" ) \
+( lane_scrub_env
+  cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_REVIEWER_TIMEOUT" "$OVERLORD_REVIEWER_CMD" ) \
     2>&1 | tee "$run_dir/review.md" || rc=$?
 
 state_set "$task" last_step "review"
@@ -104,6 +109,10 @@ Full output: $run_dir/review.md"
 fi
 
 state_set "$task" review_verdict "$verdict"
+# Bind the verdict to the exact commit it was rendered on, so the merge gate
+# can refuse to let a later commit inherit this approval.
+state_set "$task" review_commit "$commit"
+state_set "$task" review_branch "$branch"
 state_set "$task" next_step "check-and-merge"
 
 if [ "$verdict" = "CLEAN" ]; then

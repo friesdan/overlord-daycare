@@ -36,6 +36,7 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     env_WORKER_TIMEOUT="${OVERLORD_WORKER_TIMEOUT-}"
     env_REVIEWER_TIMEOUT="${OVERLORD_REVIEWER_TIMEOUT-}"
     env_TEST_TIMEOUT="${OVERLORD_TEST_TIMEOUT-}"
+    env_PASS_ENV="${OVERLORD_PASS_ENV-}"
 
     # shellcheck disable=SC1090
     . "$OVERLORD_CONFIG"
@@ -50,6 +51,7 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     [ -n "$env_WORKER_TIMEOUT" ] && OVERLORD_WORKER_TIMEOUT="$env_WORKER_TIMEOUT"
     [ -n "$env_REVIEWER_TIMEOUT" ] && OVERLORD_REVIEWER_TIMEOUT="$env_REVIEWER_TIMEOUT"
     [ -n "$env_TEST_TIMEOUT" ]   && OVERLORD_TEST_TIMEOUT="$env_TEST_TIMEOUT"
+    [ -n "$env_PASS_ENV" ]       && OVERLORD_PASS_ENV="$env_PASS_ENV"
 
     # config may keep the worktree root symbolic ('$HOME/...'); expand that
     # one prefix without eval, then insist on an absolute path.
@@ -74,6 +76,33 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     OVERLORD_WORKER_TIMEOUT="${OVERLORD_WORKER_TIMEOUT:-1800}"
     OVERLORD_REVIEWER_TIMEOUT="${OVERLORD_REVIEWER_TIMEOUT:-900}"
     OVERLORD_TEST_TIMEOUT="${OVERLORD_TEST_TIMEOUT:-1200}"
+    OVERLORD_PASS_ENV="${OVERLORD_PASS_ENV:-}"
+}
+
+# ---- Lane environment scrubbing --------------------------------------------
+# Worktrees isolate files, not credentials: everything exported in this shell
+# is inherited by the worker/reviewer AI. Call this in the subshell right
+# before launching a lane to unset secret-shaped variables. OVERLORD_PASS_ENV
+# (space-separated names, from .overlord/config.env or the environment) is the
+# explicit allowlist for the few variables a lane genuinely needs.
+lane_scrub_env() {
+    local v
+    # Names only, from line starts, so multiline values cannot fake an entry.
+    # Matches both bash's "declare -x NAME=" and plain "export NAME=" forms.
+    # The loop must NOT sit at the end of a pipeline: a piped while runs in a
+    # subshell and its unsets would never reach the caller.
+    while IFS= read -r v; do
+        case " $OVERLORD_PASS_ENV " in
+            *" $v "*) continue ;;    # explicitly allowlisted
+        esac
+        case "$v" in
+            *_TOKEN|*_KEY|*_SECRET|DATABASE_URL|AWS_*|STRIPE_*)
+                unset "$v" 2>/dev/null || true ;;
+        esac
+    done < <(
+        export -p | grep -E '^(declare -x|export) [A-Za-z_][A-Za-z0-9_]*=' \
+            | sed -E 's/^(declare -x|export) ([A-Za-z_][A-Za-z0-9_]*)=.*/\2/'
+    )
 }
 
 # Validate a task name (it becomes a branch name mt/<task> and a directory).

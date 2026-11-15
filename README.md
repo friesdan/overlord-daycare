@@ -59,6 +59,7 @@ You will see, in order:
    ================= merge gate: demo =================
      tests   : pass
      review  : CLEAN
+     commit  : 1a2b3c4d5e6f (reviewed: 1a2b3c4d5e6f)
      diff    : 1 file changed, 1 insertion(+), 1 deletion(-)
      branch  : mt/demo -> merge into main
    =====================================================
@@ -108,9 +109,9 @@ or drive the stages yourself:
 
 | Command | What it does |
 | --- | --- |
-| `bin/worker <task> <task-file>` | worktree + branch `mt/<task>`, worker AI runs there, commits, stops |
-| `bin/review <task>` | reviewer AI reads `diff <base>...mt/<task>`, writes `review.md` with a `VERDICT:` line |
-| `bin/check-and-merge <task>` | runs tests in the worktree, shows the summary, applies the approval rule, merges (never pushes) |
+| `bin/worker <task> <task-file>` | worktree + branch `mt/<task>`, worker AI runs there (secrets scrubbed from its environment), commits, stops |
+| `bin/review <task>` | reviewer AI reads `diff <base>...mt/<task>`, writes `review.md` with a `VERDICT:` line, records the exact commit it reviewed |
+| `bin/check-and-merge <task>` | runs tests in the worktree, shows the summary, applies the approval rule, merges exactly the reviewed commit — a stale or missing review refuses (never pushes) |
 | `bin/loop <task> <task-file>` | all three in sequence |
 | `bin/status` | prints `STATE.md` + liveness of each task's branch/worktree |
 | `bin/pace [meters.json] [--json]` | prints per-pool pace and advised lanes from a meters file |
@@ -128,9 +129,15 @@ or at init time:
 - `human` (default) — the merge gate asks `Merge into <base>? [y/N]` for every
   merge. Start here.
 - `auto` — the coordinator merges without prompting, but **only** when the
-  tests pass AND the independent review verdict is CLEAN; anything else stops
-  the train and leaves everything in place for you. Switch to `auto` once the
-  gates have caught everything you'd have caught yourself.
+  tests pass AND the independent review verdict is CLEAN for the exact commit
+  being merged; anything else stops the train and leaves everything in place
+  for you. Switch to `auto` once the gates have caught everything you'd have
+  caught yourself.
+
+Either way the approval binds to the exact commit: `bin/review` records the
+commit SHA it reviewed, and the gate refuses (non-zero exit) when that SHA is
+not exactly the branch head — a commit added after a CLEAN review can never
+inherit it. Re-run `bin/review` on the new head.
 
 Neither mode ever pushes — pushing stays a human (or your explicit CI)
 decision.
@@ -211,6 +218,13 @@ derived from remaining allowance, hours to reset, a catch-up term, the
 measured cost per lane-hour, and host capacity. An unreadable meter advises
 0 lanes — unknown is never plenty.
 
+**The engine paces from numbers you supply; it collects nothing.** It reads a
+JSON meters file (default: the synthetic `pacing/meters.example.json`; the
+schema and how to feed it real numbers are in
+[`pacing/README.md`](pacing/README.md)). It does not read your providers' live
+subscription usage — a collector that does (through official APIs or your own
+exported data only) is yours to plug in; the kit deliberately ships none.
+
 [`docs/pacing.md`](docs/pacing.md) explains every idea and *why* it is there,
 with a worked example and an honest-collection rule (official APIs or your own
 exported data only); [`pacing/`](pacing/) holds the dependency-free reference
@@ -220,8 +234,16 @@ engine and tests.
 
 - Worker agents run with **edit permissions inside one isolated worktree** and
   are instructed to commit and stop; lanes never merge, never push.
-- **Never give agents production credentials.** Shell profiles often export
-  live keys that every spawned agent inherits ([HOW-WE-WORK.md §10](HOW-WE-WORK.md#10-hard-won-lessons-generalized)).
+- **Worktrees isolate files, not credentials** — so worker and reviewer agents
+  start with a scrubbed environment: secret-shaped variables (`*_TOKEN`,
+  `*_KEY`, `*_SECRET`, `DATABASE_URL`, `AWS_*`, `STRIPE_*`) are unset before
+  the agent runs, with `OVERLORD_PASS_ENV="VAR1 VAR2"` as the explicit
+  allowlist. Keep production credentials out of worker shells and give a lane
+  its own least-privilege token when it needs one
+  ([HOW-WE-WORK.md §1](HOW-WE-WORK.md#1-the-shape-coordinator-lanes-reviewers)).
+- **Approvals bind to the exact commit.** `bin/review` records the commit SHA
+  it reviewed; the merge gate refuses a stale or missing review and merges
+  exactly that SHA.
 - **The human sets the rules and the gates; the coordinator may merge on its
   own once you trust those gates.** `human` mode is the default, and `auto`
   still requires a CLEAN independent review plus green tests before merging.

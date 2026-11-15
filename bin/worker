@@ -23,6 +23,10 @@ record the run under .overlord/runs/<task-name>/.
 
 Environment overrides (see ./init): OVERLORD_WORKER_CMD, OVERLORD_WORKER_TIMEOUT, ...
 The worker command may reference "$PROMPT", "$PROMPT_FILE", "$OVERLORD_WORKTREE".
+The worker runs with a scrubbed environment: secret-shaped variables
+(*_TOKEN, *_KEY, *_SECRET, DATABASE_URL, AWS_*, STRIPE_*) are unset first —
+worktrees isolate files, not credentials. List exceptions (space-separated)
+in OVERLORD_PASS_ENV to pass a variable through.
 Never pushes. Exits non-zero if the worker command fails or commits nothing.
 EOF
 }
@@ -91,7 +95,8 @@ EOF
 - Fix the code until the tests pass, then stage and commit everything
   (git add -A && git commit) on the current branch.
 - Never push. Never merge. Never touch other branches or checkouts.
-- Do not use network credentials or anything secret.
+- Do not use network credentials or anything secret (common secret-shaped
+  variables are already unset in your shell).
 - When done (or blocked), print a short summary of what you changed and stop.
 EOF
 } > "$run_dir/prompt.md"
@@ -104,8 +109,11 @@ export OVERLORD_TASK="$task"
 
 info "==> running worker (in $worktree): $OVERLORD_WORKER_CMD"
 info "    (log: $run_dir/worker.log; timeout: ${OVERLORD_WORKER_TIMEOUT}s)"
+info "    env: secret-shaped variables (\\*_TOKEN, \\*_KEY, \\*_SECRET, DATABASE_URL,"
+info "    AWS_*, STRIPE_*) unset before the worker starts; allowlist: OVERLORD_PASS_ENV${OVERLORD_PASS_ENV:+ (set: $OVERLORD_PASS_ENV)})"
 rc=0
-( cd "$worktree" && run_bounded "$OVERLORD_WORKER_TIMEOUT" "$OVERLORD_WORKER_CMD" ) \
+( lane_scrub_env
+  cd "$worktree" && run_bounded "$OVERLORD_WORKER_TIMEOUT" "$OVERLORD_WORKER_CMD" ) \
     2>&1 | tee "$run_dir/worker.log" || rc=$?
 
 state_set "$task" status "open"
