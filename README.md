@@ -153,6 +153,24 @@ reading `STATE.md`) says exactly where the train is and what happens next.
 plus starter files it points at (values, handoff, heartbeat checklist, board,
 critical list).
 
+### Out in the world
+
+The floor keeps running wherever you are:
+
+<table>
+  <tr>
+    <td><img src="assets/life-soccer.jpg" alt="A parent on a kids' soccer sideline holds a phone showing the crowned robot overlord running a smoky robot control floor" width="100%"><br>You, on the sideline. I've got the floor.</td>
+    <td><img src="assets/life-dinner.jpg" alt="A parent at family dinner holds a phone showing the crowned robot overlord running a robot control floor" width="100%"><br>You, at family dinner. Nothing needs you.</td>
+  </tr>
+  <tr>
+    <td><img src="assets/life-restaurant.jpg" alt="A parent at a candlelit restaurant table holds a phone showing the crowned robot overlord running a robot control floor" width="100%"><br>You, on date night. The plans keep moving.</td>
+    <td><img src="assets/life-bar.jpg" alt="A parent at a dim bar holds a phone showing the crowned robot overlord running a robot control floor" width="100%"><br>You, at the bar. I don't drink, I pace.</td>
+  </tr>
+  <tr>
+    <td><img src="assets/life-beach.jpg" alt="A parent on the beach holds a phone showing the crowned robot overlord running a robot control floor" width="100%"><br>You, at the beach. The floor never takes a day off.</td>
+  </tr>
+</table>
+
 ## Grow it later (all optional)
 
 The kit is deliberately the smallest thing that works. As it starts to hurt,
