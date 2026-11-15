@@ -1,0 +1,8 @@
+Example CLI — plan status (SYNTHETIC fixture — this one shows only a reset)
+
+Many sources show the used % and the reset time but not the window start;
+pass --window-hours so the start is derived from the plan's known window
+length instead of guessed.
+
+Used          55%
+Resets at     2026-11-14T15:00:00Z

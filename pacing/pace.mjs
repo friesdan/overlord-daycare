@@ -18,7 +18,8 @@
  *                 max lanes and by host capacity
  *
  * Hard rules, in order: owner-paused → 0; unreadable meter or window → 0
- * ("unknown is never plenty"); confirmed exhaustion → 0; meter reads empty → 0;
+ * ("unknown is never plenty"); confirmed exhaustion → 0; a reading staler than
+ * N heartbeats → 0 ("not pacing on old numbers"); meter reads empty → 0;
  * over pace (unless the owner said burn harder) → 0 new lanes; an uncovered
  * reserve → 0; no measured cost per lane-hour → 0 (calibrate first).
  *
@@ -53,6 +54,13 @@ export const CONFIG = Object.freeze({
   // …and at least this many, so the last hour before reset cannot demand an
   // absurd burn rate.
   catchUpFloorHours: 2,
+  // A reading older than this many heartbeats is stale: the engine says so and
+  // paces from nothing (0 lanes) rather than from old numbers. Overridable per
+  // document (heartbeatMinutes / staleAfterHeartbeats) and per pool
+  // (staleAfterHeartbeats). A pool with no collectedAt at all is not judged —
+  // hand-written meters files still work.
+  heartbeatMinutes: 30,
+  staleAfterHeartbeats: 3,
 });
 
 const finite = (x) => typeof x === "number" && Number.isFinite(x);
@@ -68,12 +76,41 @@ function parseTs(v) {
   return Number.isNaN(t) ? null : t;
 }
 
+/** "4 min" / "1.5 h" — an age a human can compare against the heartbeat. */
+function fmtAge(minutes) {
+  return minutes < 90 ? `${Math.round(minutes)} min` : `${r1(minutes / 60)} h`;
+}
+
+/**
+ * How old is this reading? Collectors stamp `collectedAt` (docs/collecting-usage.md);
+ * the engine refuses to pace on a reading staler than `staleAfterHeartbeats`
+ * heartbeats of `heartbeatMinutes` each.
+ *
+ *   absent — no collectedAt on the pool (a hand-written file): not judged
+ *   broken — present but unparseable, or in the future: the source is broken
+ *   fresh | stale — the age in minutes, against the limit
+ */
+function stalenessOf(collectedAt, nowMs, limitMinutes) {
+  if (collectedAt === undefined || collectedAt === null) {
+    return { state: "absent", minutes: null, limitMinutes };
+  }
+  const t = parseTs(collectedAt);
+  if (t === null || t > nowMs) {
+    return { state: "broken", minutes: null, limitMinutes };
+  }
+  const minutes = (nowMs - t) / 60_000;
+  return { state: minutes > limitMinutes ? "stale" : "fresh", minutes, limitMinutes };
+}
+
 /**
  * Advice for one pool. Pure: `nowMs` is injected, nothing is read or fetched.
  * Always returns an object (fail closed per pool) — a malformed pool advises
  * 0 lanes rather than crashing the whole run.
  */
-export function advisePool(pool, { nowMs, hostMaxLanes = Infinity } = {}) {
+export function advisePool(
+  pool,
+  { nowMs, hostMaxLanes = Infinity, heartbeatMinutes, staleAfterHeartbeats } = {},
+) {
   const name =
     pool && typeof pool.name === "string" && pool.name.trim() !== ""
       ? pool.name
@@ -83,12 +120,26 @@ export function advisePool(pool, { nowMs, hostMaxLanes = Infinity } = {}) {
       ? pool.meter.usedPercent
       : null;
 
+  const beatMinutes =
+    finite(heartbeatMinutes) && heartbeatMinutes > 0
+      ? heartbeatMinutes
+      : CONFIG.heartbeatMinutes;
+  const staleBeats =
+    finite(pool?.staleAfterHeartbeats) && pool.staleAfterHeartbeats > 0
+      ? pool.staleAfterHeartbeats // a pool read less often than the rest
+      : finite(staleAfterHeartbeats) && staleAfterHeartbeats > 0
+        ? staleAfterHeartbeats
+        : CONFIG.staleAfterHeartbeats;
+  const stale = stalenessOf(pool?.collectedAt, nowMs, beatMinutes * staleBeats);
+
   const zero = (band, reason) => ({
     name,
     band,
     lanes: 0,
     paceRatio: null,
     usedPercent: finite(used) ? r1(used) : null,
+    collectedAt: typeof pool?.collectedAt === "string" ? pool.collectedAt : null,
+    stalenessMinutes: stale.minutes === null ? null : r1(stale.minutes),
     elapsedPercent: null,
     remainingPercent: null,
     reservePercent: null,
@@ -142,6 +193,27 @@ export function advisePool(pool, { nowMs, hostMaxLanes = Infinity } = {}) {
       "exhausted",
       `confirmed exhausted — a real rate limit was observed (stronger than any rounded %); resets ${new Date(end).toISOString()}; 0 lanes`,
     );
+  }
+
+  // ---- Staleness: not pacing on old numbers ------------------------------------
+  // A confirmed exhaustion is a recorded fact and wins first; everything below
+  // trusts the meter, so the reading has to be fresh enough to trust.
+  if (stale.state === "broken") {
+    return zero(
+      "unknown",
+      `collectedAt "${pool.collectedAt}" is not a usable timestamp (unparseable or in the future) — the source is broken; unknown is never plenty; 0 lanes`,
+    );
+  }
+  if (stale.state === "stale") {
+    const elapsed = clamp(((nowMs - start) / (end - start)) * 100, 0, 100);
+    return {
+      ...zero(
+        "stale",
+        `reading is ${fmtAge(stale.minutes)} old — older than ${staleBeats} heartbeat${staleBeats === 1 ? "" : "s"} (${fmtAge(stale.limitMinutes)}); not pacing on old numbers, 0 lanes — re-run the collector`,
+      ),
+      elapsedPercent: r1(elapsed),
+      hoursLeft: r1((end - nowMs) / HOUR_MS),
+    };
   }
   if (used >= 100) {
     return zero(
@@ -253,6 +325,8 @@ export function advisePool(pool, { nowMs, hostMaxLanes = Infinity } = {}) {
     lanes,
     paceRatio,
     usedPercent: r1(used),
+    collectedAt: typeof pool.collectedAt === "string" ? pool.collectedAt : null,
+    stalenessMinutes: stale.minutes === null ? null : r1(stale.minutes),
     elapsedPercent: r1(elapsedPercent),
     remainingPercent,
     reservePercent: r1(reservePercent),
@@ -289,13 +363,27 @@ export function advise(meters, nowMs) {
       ? Math.floor(meters.hostMaxLanes)
       : Infinity;
 
+  // Staleness policy: the document sets it for every pool, a pool can read
+  // less often than the rest (staleAfterHeartbeats per pool).
+  const heartbeatMinutes =
+    meters && finite(meters.heartbeatMinutes) && meters.heartbeatMinutes > 0
+      ? meters.heartbeatMinutes
+      : CONFIG.heartbeatMinutes;
+  const staleAfterHeartbeats =
+    meters && finite(meters.staleAfterHeartbeats) && meters.staleAfterHeartbeats > 0
+      ? meters.staleAfterHeartbeats
+      : CONFIG.staleAfterHeartbeats;
+
   const pools = Array.isArray(meters?.pools) ? meters.pools : [];
-  const advised = pools.map((p) => advisePool(p, { nowMs: now, hostMaxLanes }));
+  const advised = pools.map((p) =>
+    advisePool(p, { nowMs: now, hostMaxLanes, heartbeatMinutes, staleAfterHeartbeats }),
+  );
   const totalAdvisedLanes = advised.reduce((sum, p) => sum + p.lanes, 0);
 
   return {
     generatedAt: new Date(now).toISOString(),
     hostMaxLanes: hostMaxLanes === Infinity ? null : hostMaxLanes,
+    stalenessPolicy: { heartbeatMinutes, staleAfterHeartbeats },
     totalAdvisedLanes,
     note:
       totalAdvisedLanes > hostMaxLanes
@@ -317,9 +405,11 @@ pacing/meters.example.json — synthetic numbers).
   --help        this help
 
 Rules: unknown or unreadable meter ⇒ 0 lanes (unknown is never plenty);
-confirmed exhaustion ⇒ 0; over-pace ⇒ 0 new lanes; reserves are held back;
-lanes are capped by the pool max and host capacity. Numbers in, advice out —
-collect real meters only via official APIs or your own exported data.`;
+confirmed exhaustion ⇒ 0; a reading older than staleAfterHeartbeats
+heartbeats ⇒ 0 (not pacing on old numbers); over-pace ⇒ 0 new lanes; reserves
+are held back; lanes are capped by the pool max and host capacity. Numbers in,
+advice out — collect real meters only via official APIs or your own exported
+data (docs/collecting-usage.md).`;
 
 function printTable(result, sourceLabel) {
   const header = ["pool", "band", "pace", "used/el", "left/spend", "lanes", "reason"];

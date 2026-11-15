@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pacing meter — Overlord Daycare</title>
+<style>
+  /* One page, no network: inline styles, inline script, inline sample data.
+     Palette: light and dark are both first-class (a mode each, not a flip). */
+  :root{
+    color-scheme: light;
+    --page:#f9f9f7; --surface:#fcfcfb;
+    --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+    --hairline:#e1e0d9; --edge:rgba(11,11,11,.10);
+    --accent:#2a78d6;
+    /* status colors are fixed across modes — they always ship with a label */
+    --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+    --shadow:0 1px 2px rgba(11,11,11,.05);
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19;
+    --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+    --hairline:#2c2c2a; --edge:rgba(255,255,255,.10);
+    --accent:#3987e5;
+    --shadow:none;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]):not([data-theme="dark"]){
+      color-scheme: dark;
+      --page:#0d0d0d; --surface:#1a1a19;
+      --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+      --hairline:#2c2c2a; --edge:rgba(255,255,255,.10);
+      --accent:#3987e5;
+      --shadow:none;
+    }
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:24px 20px 48px;
+    background:var(--page); color:var(--ink);
+    font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  .wrap{max-width:1060px;margin:0 auto}
+
+  header.top{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;justify-content:space-between}
+  h1{font-size:20px;margin:0}
+  h1 small{font-weight:400;color:var(--ink-2);font-size:13px}
+  .summary{color:var(--ink-2);font-size:13px}
+  .summary b{color:var(--ink)}
+  button{
+    font:inherit;font-size:12.5px;color:var(--ink-2);
+    background:var(--surface);border:1px solid var(--edge);border-radius:8px;
+    padding:4px 10px;cursor:pointer;
+  }
+  button:hover{color:var(--ink);border-color:var(--muted)}
+
+  .legend{
+    display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;
+    margin:14px 0 4px;padding:10px 12px;
+    background:var(--surface);border:1px solid var(--edge);border-radius:10px;
+    color:var(--ink-2);font-size:12.5px;
+  }
+  .key{display:inline-flex;align-items:center;gap:7px}
+  .key .bar{width:22px;height:8px;border-radius:4px;background:var(--accent)}
+  .key .tick{width:2px;height:14px;border-radius:1px;background:var(--ink)}
+  .key .hatch{
+    width:22px;height:8px;border-radius:4px;
+    background:repeating-linear-gradient(45deg,var(--muted) 0 1px,transparent 1px 4px);
+    border:1px solid var(--hairline);
+  }
+  .policy{margin-left:auto;color:var(--muted)}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;margin-top:16px}
+  .card{
+    background:var(--surface);border:1px solid var(--edge);border-radius:12px;
+    padding:14px 16px 12px;box-shadow:var(--shadow);
+    display:flex;flex-direction:column;gap:9px;min-width:0;
+  }
+  .card header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 10px}
+  .card h2{font-size:14.5px;margin:0;font-weight:650;overflow-wrap:anywhere;min-width:0}
+  .pill{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;color:var(--ink-2)}
+  .pill .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
+  .pill b{font-weight:650;color:var(--ink)}
+
+  /* the meter: an 8px track, a severity fill, and the pace marker above it */
+  .meter{position:relative;height:8px;margin:6px 0 2px}
+  .track{
+    position:absolute;inset:0;border-radius:4px;overflow:hidden;
+    background:var(--hairline); /* fallback when color-mix is unsupported */
+    background:color-mix(in srgb, var(--fill, var(--muted)) 16%, var(--surface));
+    box-shadow:inset 0 0 0 1px var(--edge); /* so muted fills never merge with the track */
+  }
+  .fill{position:absolute;left:0;top:0;bottom:0;background:var(--fill,var(--muted))}
+  .reserve{
+    position:absolute;top:0;bottom:0;right:0;border-left:2px solid var(--surface);
+    background:repeating-linear-gradient(45deg,var(--muted) 0 1px,transparent 1px 4px);
+    opacity:.55;
+  }
+  .marker{
+    position:absolute;top:-4px;bottom:-4px;width:2px;border-radius:1px;background:var(--ink);
+    box-shadow:0 0 0 2px var(--surface); /* surface ring so it reads over the fill */
+  }
+  .scale{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--ink-2)}
+  .scale .goal{color:var(--muted);text-align:right}
+  .meta{font-size:12.5px;color:var(--ink-2)}
+  .advice{font-size:13px}
+  .advice b{font-variant-numeric:tabular-nums}
+  .advice .none{color:var(--ink-2)}
+  .reason{margin:0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+  .read{margin-top:auto;font-size:11.5px;color:var(--muted);border-top:1px solid var(--hairline);padding-top:7px}
+  .read .warn-read{color:var(--ink-2);font-weight:600}
+
+  .tools{margin-top:22px;display:flex;flex-direction:column;gap:8px}
+  textarea{
+    width:100%;min-height:110px;resize:vertical;
+    font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:var(--ink);background:var(--surface);
+    border:1px solid var(--edge);border-radius:10px;padding:10px;
+  }
+  .tools .row{display:flex;gap:8px;align-items:center}
+  .err{color:var(--crit);font-size:12.5px}
+
+  details{margin-top:18px}
+  summary{cursor:pointer;color:var(--ink-2);font-size:13px}
+  table{border-collapse:collapse;width:100%;margin-top:8px;font-size:12.5px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--hairline);vertical-align:top}
+  th{color:var(--muted);font-weight:600}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  td.reason,th.reason{max-width:360px;color:var(--ink-2)}
+
+  footer{margin-top:26px;color:var(--muted);font-size:12px}
+  code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surface);
+       border:1px solid var(--edge);border-radius:5px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>Pacing <small>· one meter per plan</small></h1>
+    <div class="summary" id="summary"></div>
+    <button id="theme" type="button">theme: auto</button>
+  </header>
+
+  <div class="legend">
+    <span class="key"><span class="bar"></span>used share of the allowance</span>
+    <span class="key"><span class="tick"></span>where an even burn would be by now</span>
+    <span class="key"><span class="hatch"></span>held for a named reserve</span>
+    <span class="policy" id="policy"></span>
+  </div>
+
+  <main class="grid" id="cards" aria-live="polite"></main>
+
+  <section class="tools">
+    <div class="row">
+      <button id="render" type="button">render pasted output</button>
+      <button id="reset" type="button">back to the sample</button>
+      <span class="err" id="err" role="alert"></span>
+    </div>
+    <textarea id="paste" spellcheck="false"
+      placeholder="Paste your own advice here — the output of:  bin/pace your-meters.json --json  — and press 'render pasted output'. Nothing leaves this page."></textarea>
+  </section>
+
+  <details>
+    <summary>table view</summary>
+    <div id="table"></div>
+  </details>
+
+  <footer>
+    Sample data is synthetic and embedded — regenerate it with
+    <code>bin/pace examples/pacing-meter/sample-meters.json --json</code>.
+    The pace marker and the bands are the engine's rules, explained in
+    <code>docs/pacing.md</code>. This page reads, renders, and nothing else.
+  </footer>
+
+</div>
+
+<script type="application/json" id="sample">{"generatedAt":"2026-11-14T12:00:00.000Z","hostMaxLanes":6,"stalenessPolicy":{"heartbeatMinutes":30,"staleAfterHeartbeats":3},"totalAdvisedLanes":6,"note":null,"pools":[{"name":"worker-weekly","band":"behind","lanes":2,"paceRatio":0.56,"usedPercent":40,"collectedAt":"2026-11-14T11:58:00Z","stalenessMinutes":2,"elapsedPercent":71.4,"remainingPercent":60,"reservePercent":0,"reserveFor":null,"spendablePercent":60,"hoursLeft":48,"catchUpPoints":31.4,"burnPerLaneHour":4,"burnSource":"measured","reason":"behind (pace 0.56); burn 6.5%/h (1.3 keep-pace + 5.2 catch-up over 6 h) ÷ 4%/lane-h → 2 lanes; cap 4"},{"name":"review-weekly","band":"behind","lanes":3,"paceRatio":0.56,"usedPercent":40,"collectedAt":"2026-11-14T11:57:00Z","stalenessMinutes":3,"elapsedPercent":71.4,"remainingPercent":60,"reservePercent":25,"reserveFor":"code reviews","spendablePercent":35,"hoursLeft":48,"catchUpPoints":31.4,"burnPerLaneHour":2,"burnSource":"measured","reason":"behind (pace 0.56); burn 6%/h (0.7 keep-pace + 5.2 catch-up over 6 h) ÷ 2%/lane-h → 3 lanes; cap 3; 25% held for code reviews (35% spendable)"},{"name":"nightly-5h","band":"hot","lanes":0,"paceRatio":1.38,"usedPercent":55,"collectedAt":"2026-11-14T11:55:00Z","stalenessMinutes":5,"elapsedPercent":40,"remainingPercent":45,"reservePercent":0,"reserveFor":null,"spendablePercent":45,"hoursLeft":3,"catchUpPoints":null,"burnPerLaneHour":20,"burnSource":"assumed","reason":"over pace (1.38: used 55% vs elapsed 40%) — burning faster than the clock; 0 new lanes, let the window catch up"},{"name":"scout-daily","band":"stale","lanes":0,"paceRatio":null,"usedPercent":30,"collectedAt":"2026-11-14T04:00:00Z","stalenessMinutes":480,"elapsedPercent":50,"remainingPercent":null,"reservePercent":null,"reserveFor":null,"spendablePercent":null,"hoursLeft":12,"catchUpPoints":null,"burnPerLaneHour":8,"burnSource":"assumed","reason":"reading is 8 h old — older than 3 heartbeats (1.5 h); not pacing on old numbers, 0 lanes — re-run the collector"},{"name":"flat-monthly","band":"even","lanes":1,"paceRatio":1,"usedPercent":45,"collectedAt":"2026-11-14T11:30:00Z","stalenessMinutes":30,"elapsedPercent":45,"remainingPercent":55,"reservePercent":0,"reserveFor":null,"spendablePercent":55,"hoursLeft":396,"catchUpPoints":0,"burnPerLaneHour":1,"burnSource":"assumed","reason":"even (pace 1); burn 0.1%/h (0.1 keep-pace) ÷ 1%/lane-h → 1 lane; cap 3"},{"name":"probe-api","band":"unknown","lanes":0,"paceRatio":null,"usedPercent":null,"collectedAt":"2026-11-14T11:59:00Z","stalenessMinutes":1,"elapsedPercent":null,"remainingPercent":null,"reservePercent":null,"reserveFor":null,"spendablePercent":null,"hoursLeft":null,"catchUpPoints":null,"burnPerLaneHour":5,"burnSource":"assumed","reason":"meter unreadable (no usable used %) — unknown is never plenty; 0 lanes"},{"name":"demo-credits","band":"paused","lanes":0,"paceRatio":null,"usedPercent":10,"collectedAt":null,"stalenessMinutes":null,"elapsedPercent":null,"remainingPercent":null,"reservePercent":null,"reserveFor":null,"spendablePercent":null,"hoursLeft":null,"catchUpPoints":null,"burnPerLaneHour":1,"burnSource":"assumed","reason":"owner paused this pool — 0 lanes until they resume it"}]}</script>
+<script>
+"use strict";
+
+/* ---- the state vocabulary: band -> pill label, severity color, tone -------- *
+ * A status color never carries meaning alone: every pill leads with its label. */
+const STATES = {
+  even:       { label: "on pace",              fill: "var(--accent)" },
+  early:      { label: "too early to judge",   fill: "var(--accent)" },
+  behind:     { label: "under · surplus to spend", fill: "var(--good)" },
+  hot:        { label: "over · cooling down",  fill: "var(--warn)" },
+  stale:      { label: "stale reading",        fill: "var(--muted)" },
+  unknown:    { label: "unknown",              fill: "var(--muted)" },
+  exhausted:  { label: "exhausted (confirmed)",fill: "var(--crit)" },
+  empty:      { label: "reads empty (unconfirmed)", fill: "var(--crit)" },
+  paused:     { label: "paused by the owner",  fill: "var(--muted)" },
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const clamp100 = (v) => Math.max(0, Math.min(100, v));
+
+function fmtHoursLeft(h) {
+  if (h === null || h === undefined || !isFinite(h)) return null;
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
+  if (h < 48) return `${h < 10 ? Math.round(h * 10) / 10 : Math.round(h)} h`;
+  return `${Math.round(h / 24 * 10) / 10} d`;
+}
+function fmtAge(min) {
+  if (min === null || min === undefined) return null;
+  if (min < 90) return `${Math.round(min)} min`;
+  return `${Math.round(min / 60 * 10) / 10} h`;
+}
+const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtUtc(iso) { // stable across locales, matches the engine's UTC stamps
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${hh}:${mm} UTC`;
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+/* ---- one meter card -------------------------------------------------------- */
+function card(p) {
+  const state = STATES[p.band] || { label: p.band, fill: "var(--muted)" };
+  const c = el("article", "card");
+  c.style.setProperty("--fill", state.fill);
+
+  const head = el("header");
+  head.appendChild(el("h2", null, p.name || "(unnamed)"));
+  const pill = el("span", "pill");
+  pill.appendChild(el("i", "dot"));
+  pill.appendChild(el("b", null, state.label));
+  if (p.paceRatio !== null && p.paceRatio !== undefined) {
+    pill.appendChild(document.createTextNode(` · pace ${p.paceRatio}`));
+  }
+  head.appendChild(pill);
+  c.appendChild(head);
+
+  // the bar: fill = used %, marker = elapsed % ("where you should be by now")
+  const meter = el("div", "meter");
+  const track = el("div", "track");
+  if (p.usedPercent !== null && p.usedPercent !== undefined) {
+    const fill = el("div", "fill");
+    fill.style.width = `${clamp100(p.usedPercent)}%`;
+    track.appendChild(fill);
+  }
+  if (p.reservePercent) {
+    const r = el("div", "reserve");
+    r.style.width = `${clamp100(p.reservePercent)}%`;
+    track.appendChild(r);
+  }
+  meter.appendChild(track);
+  if (p.elapsedPercent !== null && p.elapsedPercent !== undefined) {
+    const m = el("div", "marker");
+    m.style.left = `${clamp100(p.elapsedPercent)}%`;
+    m.title = "an even burn would be here by now";
+    meter.appendChild(m);
+  }
+  meter.setAttribute("role", "img");
+  meter.setAttribute("aria-label",
+    `${p.name}: ${p.usedPercent ?? "unknown"} percent used of the window` +
+    (p.elapsedPercent != null ? `, ${p.elapsedPercent} percent elapsed` : "") +
+    `, ${state.label}`);
+  c.appendChild(meter);
+
+  const scale = el("div", "scale");
+  const left = el("span", null,
+    p.usedPercent != null ? `${p.usedPercent}% used` : "used % unknown");
+  scale.appendChild(left);
+  if (p.elapsedPercent != null) {
+    scale.appendChild(el("span", "goal", `even burn by now ≈ ${p.elapsedPercent}%`));
+  }
+  c.appendChild(scale);
+
+  const bits = [];
+  if (p.hoursLeft != null) {
+    const t = fmtHoursLeft(p.hoursLeft);
+    bits.push(`resets in ${t} (${fmtUtc(p.windowEnd)})`.replace(" ()", ""));
+  }
+  if (p.reservePercent) {
+    bits.push(`${p.reservePercent}% held for ${p.reserveFor || "a named purpose"}`);
+  }
+  if (bits.length) c.appendChild(el("div", "meta", bits.join(" · ")));
+
+  const advice = el("div", "advice");
+  if (p.lanes > 0) {
+    advice.appendChild(el("b", null, `${p.lanes} lane${p.lanes === 1 ? "" : "s"}`));
+    advice.appendChild(document.createTextNode(" may run now"));
+  } else {
+    advice.appendChild(el("span", "none", "no new lanes"));
+  }
+  c.appendChild(advice);
+
+  if (p.reason) c.appendChild(el("p", "reason", p.reason));
+
+  const read = el("div", "read");
+  if (p.stalenessMinutes != null) {
+    const age = fmtAge(p.stalenessMinutes);
+    if (p.band === "stale") {
+      read.appendChild(el("span", "warn-read", `read ${age} ago — too old to pace on`));
+    } else {
+      read.appendChild(document.createTextNode(`read ${age} ago`));
+    }
+  } else {
+    read.appendChild(document.createTextNode("reading not stamped (hand-written entry)"));
+  }
+  c.appendChild(read);
+  return c;
+}
+
+/* ---- the whole document ------------------------------------------------------ */
+function render(doc) {
+  const pools = Array.isArray(doc && doc.pools) ? doc.pools : [];
+  if (!pools.length) throw new Error("no pools[] in this document");
+
+  const total = pools.reduce((s, p) => s + (p.lanes || 0), 0);
+  const host = doc.hostMaxLanes != null ? ` of ${doc.hostMaxLanes} host` : "";
+  const s = $("summary");
+  s.textContent = "";
+  s.appendChild(document.createTextNode("advised "));
+  const b = el("b", null, String(total));
+  s.appendChild(b);
+  s.appendChild(document.createTextNode(` lane${total === 1 ? "" : "s"}${host}`));
+  if (doc.generatedAt) s.appendChild(document.createTextNode(` · ${fmtUtc(doc.generatedAt)}`));
+
+  const pol = doc.stalenessPolicy;
+  if (pol && pol.heartbeatMinutes && pol.staleAfterHeartbeats) {
+    const min = pol.heartbeatMinutes * pol.staleAfterHeartbeats;
+    $("policy").textContent =
+      `a reading older than ${pol.staleAfterHeartbeats} heartbeats (${fmtAge(min)}) is stale and paces from nothing`;
+  } else {
+    $("policy").textContent = "";
+  }
+
+  const cards = $("cards");
+  cards.textContent = "";
+  for (const p of pools) cards.appendChild(card(p));
+
+  // the table view: everything the cards say, in rows
+  const t = el("table");
+  const head = el("tr");
+  for (const [h, cls] of [["pool", ""], ["band", ""], ["pace", "num"], ["used %", "num"],
+                          ["elapsed %", "num"], ["lanes", "num"], ["read", ""], ["why", "reason"]]) {
+    const th = el("th", cls, h);
+    head.appendChild(th);
+  }
+  const thead = el("thead"); thead.appendChild(head); t.appendChild(thead);
+  const tbody = el("tbody");
+  for (const p of pools) {
+    const tr = el("tr");
+    const cells = [
+      [p.name, ""], [p.band, ""], [p.paceRatio ?? "-", "num"], [p.usedPercent ?? "-", "num"],
+      [p.elapsedPercent ?? "-", "num"], [String(p.lanes), "num"],
+      [p.stalenessMinutes != null ? `${fmtAge(p.stalenessMinutes)} ago` : "not stamped", ""],
+      [p.reason ?? "", "reason"],
+    ];
+    for (const [v, cls] of cells) tr.appendChild(el("td", cls, String(v)));
+    tbody.appendChild(tr);
+  }
+  t.appendChild(tbody);
+  $("table").textContent = "";
+  $("table").appendChild(t);
+}
+
+/* ---- wiring -------------------------------------------------------------------- */
+const SAMPLE = JSON.parse($("sample").textContent);
+render(SAMPLE);
+
+// ?theme=light|dark pins the theme (shareable, and no-JS-toggle environments);
+// without it the page follows the OS setting and the button toggles it.
+(() => {
+  const want = new URLSearchParams(location.search).get("theme");
+  if (want === "light" || want === "dark") {
+    document.documentElement.setAttribute("data-theme", want);
+    $("theme").textContent = `theme: ${want}`;
+  }
+})();
+
+$("render").addEventListener("click", () => {
+  $("err").textContent = "";
+  try {
+    render(JSON.parse($("paste").value));
+  } catch (e) {
+    $("err").textContent = `could not render that: ${e.message}`;
+  }
+});
+$("reset").addEventListener("click", () => {
+  $("err").textContent = "";
+  $("paste").value = "";
+  render(SAMPLE);
+});
+
+const THEMES = ["auto", "light", "dark"];
+$("theme").addEventListener("click", () => {
+  const cur = THEMES.indexOf(document.documentElement.getAttribute("data-theme") || "auto");
+  const next = THEMES[(cur + 1) % THEMES.length];
+  if (next === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", next);
+  $("theme").textContent = `theme: ${next}`;
+});
+</script>
+</body>
+</html>

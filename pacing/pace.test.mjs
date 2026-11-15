@@ -200,6 +200,86 @@ test("a window that should have reset reads as unknown", () => {
   assert.match(a.reason, /read the meter again/);
 });
 
+test("stale reading: the engine says so and paces from nothing, not from old numbers", () => {
+  // Same healthy pool as the "on pace" case, but read 8 heartbeats ago
+  // (240 min at the default 30-min beat — past the 3-heartbeat limit).
+  const base = { name: "old-read", meter: { usedPercent: 50 }, ...HALF, burnPerLaneHour: 5, maxLanes: 6 };
+  const stale = advisePool(
+    { ...base, collectedAt: new Date(NOW - 240 * 60_000).toISOString() },
+    { nowMs: NOW },
+  );
+  assert.equal(stale.band, "stale");
+  assert.equal(stale.lanes, 0);
+  assert.equal(stale.paceRatio, null); // no pace computed from an old number
+  assert.equal(stale.stalenessMinutes, 240);
+  assert.match(stale.reason, /not pacing on old numbers/);
+  assert.match(stale.reason, /re-run the collector/);
+
+  // One heartbeat old is fresh and paces normally.
+  const fresh = advisePool(
+    { ...base, collectedAt: new Date(NOW - 30 * 60_000).toISOString() },
+    { nowMs: NOW },
+  );
+  assert.equal(fresh.band, "even");
+  assert.equal(fresh.lanes, 1);
+
+  // No collectedAt at all (a hand-written file): not judged, still paces.
+  const unstamped = advisePool({ ...base }, { nowMs: NOW });
+  assert.equal(unstamped.band, "even");
+  assert.equal(unstamped.collectedAt, null);
+  assert.equal(unstamped.stalenessMinutes, null);
+  assert.equal(unstamped.lanes, 1);
+});
+
+test("staleness limits are configurable per document and per pool", () => {
+  const at = (min) => new Date(NOW - min * 60_000).toISOString();
+  const pool = { name: "p", meter: { usedPercent: 50 }, ...HALF, burnPerLaneHour: 5 };
+
+  // A daily-read pool on a 30-min heartbeat: the document raises the limit to
+  // 48 heartbeats (24 h), so 8 heartbeats old is fresh.
+  const doc = advise(
+    { now: "2026-11-14T12:00:00Z", heartbeatMinutes: 30, staleAfterHeartbeats: 48, pools: [{ ...pool, collectedAt: at(240) }] },
+  );
+  assert.equal(doc.pools[0].band, "even");
+  assert.equal(doc.stalenessPolicy.heartbeatMinutes, 30);
+  assert.equal(doc.stalenessPolicy.staleAfterHeartbeats, 48);
+
+  // The same document, one pool read less often still: its own override wins.
+  const perPool = advise(
+    { now: "2026-11-14T12:00:00Z", staleAfterHeartbeats: 1, pools: [{ ...pool, collectedAt: at(45), staleAfterHeartbeats: 4 }] },
+  );
+  assert.equal(perPool.pools[0].band, "even"); // 45 min < its own 4-heartbeat limit
+
+  // Default policy: 3 × 30 min = 90 min. 45 min old with a 1-heartbeat limit is stale.
+  const tighter = advise({ now: "2026-11-14T12:00:00Z", staleAfterHeartbeats: 1, pools: [{ ...pool, collectedAt: at(45) }] });
+  assert.equal(tighter.pools[0].band, "stale");
+  assert.match(tighter.pools[0].reason, /older than 1 heartbeat/);
+});
+
+test("a broken collectedAt (unparseable, or in the future) reads as unknown", () => {
+  const base = { name: "broken", meter: { usedPercent: 50 }, ...HALF, burnPerLaneHour: 5 };
+  const garbage = advisePool({ ...base, collectedAt: "yesterday, probably" }, { nowMs: NOW });
+  assert.equal(garbage.band, "unknown");
+  assert.equal(garbage.lanes, 0);
+  assert.match(garbage.reason, /not a usable timestamp/);
+
+  // A source claiming the future is broken, not prophetic.
+  const future = advisePool(
+    { ...base, collectedAt: new Date(NOW + 60 * 60_000).toISOString() },
+    { nowMs: NOW },
+  );
+  assert.equal(future.band, "unknown");
+  assert.equal(future.lanes, 0);
+
+  // A confirmed exhaustion is a recorded fact — it survives a stale meter.
+  const exhausted = advisePool(
+    { ...base, collectedAt: new Date(NOW - 240 * 60_000).toISOString(), exhaustedConfirmed: true },
+    { nowMs: NOW },
+  );
+  assert.equal(exhausted.band, "exhausted");
+  assert.equal(exhausted.lanes, 0);
+});
+
 test("no measured cost per lane-hour: 0 lanes until calibrated", () => {
   const a = advisePool(
     { name: "uncal", meter: { usedPercent: 30 }, ...HALF, maxLanes: 4 },

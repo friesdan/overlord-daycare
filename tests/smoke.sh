@@ -11,6 +11,8 @@
 #      refused; re-review the new head -> merge allowed
 #   6. credentials: secret env vars set in the parent do not reach the worker
 #      (OVERLORD_PASS_ENV allowlisted ones do)
+#   7. example usage collector: fixtures -> pacing input format -> bin/pace
+#      reads it (no network; unit tests in tests/example-collector.test.mjs)
 #
 # Requires: git, bash, python3. Run from anywhere: tests/smoke.sh
 # Logs of each loop run are left in /tmp/overlord-smoke-*.log for debugging.
@@ -169,6 +171,34 @@ for v in GITHUB_TOKEN DEMO_API_KEY DEMO_CLIENT_SECRET DATABASE_URL AWS_SECRET_AC
 done
 check "OVERLORD_PASS_ENV variable passed through" grep -q "^SAFE_LANE_TOKEN=allowed-through$" "$PROBE_FILE"
 check "PATH still passed through" grep -q "^PATH=" "$PROBE_FILE"
+
+echo "== scenario 7: example usage collector (fixture -> meters -> pacing) =="
+if command -v node >/dev/null 2>&1; then
+    node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+    if [ "${node_major:-0}" -lt 20 ] 2>/dev/null; then
+        echo "== node < 20 found — skipping the collector scenario =="
+    else
+        if node --test tests/ > /tmp/overlord-smoke-7.log 2>&1; then
+            ok "example-collector unit tests pass"
+        else
+            bad "example-collector tests failed (see /tmp/overlord-smoke-7.log)"
+        fi
+        # and the chain end to end: collector writes a meters file, bin/pace reads it
+        smoke_meters="$(mktemp -d)/meters.json"
+        if node collectors/example-collector/collector.mjs --pool smoke-plan \
+            --fixture collectors/example-collector/fixtures/cli-status.txt \
+            --burn-per-lane-hour 4 --meters "$smoke_meters" > /tmp/overlord-smoke-7b.log 2>&1 \
+            && grep -q '"usedPercent": 40' "$smoke_meters" \
+            && "$KIT/bin/pace" "$smoke_meters" --json 2>>/tmp/overlord-smoke-7b.log | grep -q '"smoke-plan"'; then
+            ok "collector output paces (bin/pace reads what it wrote)"
+        else
+            bad "collector -> bin/pace chain failed (see /tmp/overlord-smoke-7b.log)"
+        fi
+        rm -f "$smoke_meters"
+    fi
+else
+    echo "== node not found — skipping the collector scenario (bin/pace needs it too) =="
+fi
 
 echo
 printf 'smoke: %d passed, %d failed\n' "$PASS" "$FAIL"
