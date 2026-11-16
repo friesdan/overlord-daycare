@@ -18,11 +18,29 @@
 #      records the call; local main untouched); failing checks refuse
 #
 # Requires: git, bash, python3. Run from anywhere: tests/smoke.sh
-# Logs of each run are left in /tmp/overlord-smoke-*.log for debugging.
+# Logs of each run are left in $SMOKE_TMP/*.log for debugging.
 set -u
 # shellcheck disable=SC1091
 
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Everything the run writes (worktrees, logs, fake gh) lives in one temp dir,
+# with HOME pointed inside it, so the real home directory is never touched.
+SMOKE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/overlord-smoke.XXXXXX")" || exit 1
+export HOME="$SMOKE_TMP/home"
+mkdir -p "$HOME"
+# shellcheck disable=SC2329  # invoked via the EXIT trap
+cleanup() {
+    if [ "${SMOKE_KEEP:-0}" = "1" ]; then echo "smoke: kept $SMOKE_TMP"; return 0; fi
+    rm -rf "$SMOKE_TMP"
+}
+trap cleanup EXIT
+# Git identity: keep a global one working under the temporary HOME, fall back
+# to a placeholder so commits made by the stubs never depend on the real home.
+export GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
+git config --global user.name "smoke test" >/dev/null 2>&1
+git config --global user.email "smoke@example.invalid" >/dev/null 2>&1
+git config --global init.defaultBranch main >/dev/null 2>&1
 # shellcheck disable=SC1091  # for state_get, used by the checks below
 . "$KIT/lib/common.sh"
 PASS=0
@@ -37,13 +55,13 @@ check() { # check <description> <command...>
 reset_demo() { # recreate the demo repo fresh (each scenario needs a failing test)
     local n="$1"
     rm -rf "$HOME/.overlord-daycare/worktrees/demo-project"
-    if ./init --demo > "/tmp/overlord-smoke-init$n.log" 2>&1; then ok "demo repo reset"; else bad "./init --demo reset failed"; fi
+    if ./init --demo > "$SMOKE_TMP/init$n.log" 2>&1; then ok "demo repo reset"; else bad "./init --demo reset failed"; fi
 }
 run_stage() { # run_stage <label> <command...> — one kit step with the stub config
     local label="$1"; shift
     OVERLORD_WORKER_CMD="$STUB_FIX" OVERLORD_REVIEWER_CMD="$STUB_CLEAN" \
     OVERLORD_WORKER_TIMEOUT=60 OVERLORD_REVIEWER_TIMEOUT=60 \
-        "$@" > "/tmp/overlord-smoke-$label.log" 2>&1
+        "$@" > "$SMOKE_TMP/$label.log" 2>&1
 }
 
 command -v git >/dev/null 2>&1     || { echo "git not found" >&2; exit 1; }
@@ -71,7 +89,7 @@ DEMO_REPO="$KIT/.overlord/demo-project"
 # reports checks per FAKE_GH_CHECKS, and records every `pr merge` call
 # WITHOUT merging anything (the real platform merges server-side; locally,
 # main must not move — the scenarios assert exactly that).
-FAKE_BIN="$(mktemp -d)"
+FAKE_BIN="$SMOKE_TMP/fakebin"; mkdir -p "$FAKE_BIN"
 FAKE_GH_LOG="$FAKE_BIN/gh-calls.log"
 cat > "$FAKE_BIN/gh" <<'FAKEEOF'
 #!/usr/bin/env bash
@@ -107,7 +125,7 @@ export DEMO_REPO FAKE_GH_LOG
 FAKE_PATH="$FAKE_BIN:$PATH"
 
 echo "== scenario 0: ./init --demo =="
-if ./init --demo >/tmp/overlord-smoke-init.log 2>&1; then ok "./init --demo exited 0"; else bad "./init --demo failed (see /tmp/overlord-smoke-init.log)"; fi
+if ./init --demo >"$SMOKE_TMP/init.log" 2>&1; then ok "./init --demo exited 0"; else bad "./init --demo failed (see $SMOKE_TMP/init.log)"; fi
 check ".overlord/config.env written" test -f .overlord/config.env
 check ".overlord/SKILL.md written" test -f .overlord/SKILL.md
 if grep -q '<<YOUR [A-Z]' .overlord/SKILL.md; then bad "skill copy still has <<YOUR ...>> placeholders"; else ok "skill placeholders filled"; fi
@@ -120,10 +138,10 @@ echo "== scenario 1: worker + CLEAN review -> ready, nothing merged locally =="
 main_before="$(git -C "$DEMO_REPO" rev-parse main)"
 if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass OVERLORD_WORKER_CMD="$STUB_FIX" OVERLORD_REVIEWER_CMD="$STUB_CLEAN" \
     OVERLORD_WORKER_TIMEOUT=60 OVERLORD_REVIEWER_TIMEOUT=60 \
-    "$KIT/bin/loop" demo "$KIT/examples/demo-task.md" > /tmp/overlord-smoke-1.log 2>&1; then
+    "$KIT/bin/loop" demo "$KIT/examples/demo-task.md" > "$SMOKE_TMP/1.log" 2>&1; then
     ok "bin/loop demo exited 0 (check-only merge step)"
 else
-    bad "bin/loop demo failed (see /tmp/overlord-smoke-1.log)"
+    bad "bin/loop demo failed (see $SMOKE_TMP/1.log)"
 fi
 check "review.md saved with CLEAN verdict" grep -q 'VERDICT: CLEAN' .overlord/runs/demo/review.md
 check "worker.log saved" test -s .overlord/runs/demo/worker.log
@@ -141,13 +159,13 @@ echo "== scenario 2: FINDINGS verdict blocks the merge =="
 reset_demo 2
 if OVERLORD_WORKER_CMD="$STUB_FIX" OVERLORD_REVIEWER_CMD="$STUB_FINDINGS" \
     OVERLORD_WORKER_TIMEOUT=60 OVERLORD_REVIEWER_TIMEOUT=60 \
-    "$KIT/bin/loop" demo2 "$KIT/examples/demo-task.md" > /tmp/overlord-smoke-2.log 2>&1; then
+    "$KIT/bin/loop" demo2 "$KIT/examples/demo-task.md" > "$SMOKE_TMP/2.log" 2>&1; then
     bad "loop continued despite FINDINGS verdict"
 else
     ok "loop stopped on FINDINGS"
 fi
 check "review.md saved with FINDINGS verdict" grep -q 'VERDICT: FINDINGS' .overlord/runs/demo2/review.md
-if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo2 > /tmp/overlord-smoke-2b.log 2>&1; then
+if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo2 > "$SMOKE_TMP/2b.log" 2>&1; then
     bad "merge-when-green enabled auto-merge despite FINDINGS"
 else
     ok "merge-when-green refused FINDINGS (exit non-zero)"
@@ -156,8 +174,8 @@ fi
 echo "== scenario 3: a new commit cannot inherit an old CLEAN review =="
 reset_demo 3
 W3="$HOME/.overlord-daycare/worktrees/demo-project/demo3"
-if run_stage 3a "$KIT/bin/worker" demo3 "$KIT/examples/demo-task.md"; then ok "bin/worker demo3 ran (commit A)"; else bad "bin/worker demo3 failed (see /tmp/overlord-smoke-3a.log)"; fi
-if run_stage 3b "$KIT/bin/review" demo3; then ok "bin/review demo3 recorded CLEAN"; else bad "bin/review demo3 failed (see /tmp/overlord-smoke-3b.log)"; fi
+if run_stage 3a "$KIT/bin/worker" demo3 "$KIT/examples/demo-task.md"; then ok "bin/worker demo3 ran (commit A)"; else bad "bin/worker demo3 failed (see $SMOKE_TMP/3a.log)"; fi
+if run_stage 3b "$KIT/bin/review" demo3; then ok "bin/review demo3 recorded CLEAN"; else bad "bin/review demo3 failed (see $SMOKE_TMP/3b.log)"; fi
 commit_a="$(git -C "$DEMO_REPO" rev-parse mt/demo3)"
 if [ "$(state_get demo3 review_commit)" = "$commit_a" ]; then ok "review bound to commit A"; else bad "review not bound to commit A"; fi
 if ( cd "$W3" && echo "# demo3: follow-up commit B (unreviewed)" >> calc.py \
@@ -167,23 +185,23 @@ else
     bad "could not add commit B in $W3"
 fi
 commit_b="$(git -C "$DEMO_REPO" rev-parse mt/demo3)"
-if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo3 --check-only > /tmp/overlord-smoke-3c.log 2>&1; then
+if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo3 --check-only > "$SMOKE_TMP/3c.log" 2>&1; then
     bad "merge-when-green accepted unreviewed commit B on an old CLEAN review"
 else
     ok "merge-when-green refused the stale review"
 fi
-check "refusal says why (stale review)" grep -qi "stale review" /tmp/overlord-smoke-3c.log
+check "refusal says why (stale review)" grep -qi "stale review" "$SMOKE_TMP/3c.log"
 if run_stage 3d "$KIT/bin/review" demo3; then ok "bin/review re-ran on commit B"; else bad "re-review failed"; fi
 if [ "$(state_get demo3 review_commit)" = "$commit_b" ]; then ok "review now bound to commit B"; else bad "re-review did not bind to commit B"; fi
-if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo3 --check-only > /tmp/overlord-smoke-3e.log 2>&1; then
+if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo3 --check-only > "$SMOKE_TMP/3e.log" 2>&1; then
     ok "check-only green after the re-review of commit B"
 else
-    bad "check-only refused a fresh review (see /tmp/overlord-smoke-3e.log)"
+    bad "check-only refused a fresh review (see $SMOKE_TMP/3e.log)"
 fi
 
 echo "== scenario 4: bin/status =="
-if bin/status >/tmp/overlord-smoke-4.log 2>&1; then ok "bin/status exited 0"; else bad "bin/status failed"; fi
-check "bin/status lists tasks" grep -q '## demo3' /tmp/overlord-smoke-4.log
+if bin/status >"$SMOKE_TMP/4.log" 2>&1; then ok "bin/status exited 0"; else bad "bin/status failed"; fi
+check "bin/status lists tasks" grep -q '## demo3' "$SMOKE_TMP/4.log"
 
 echo "== scenario 5: per-task env — secrets stay out, profile vars get in =="
 reset_demo 5
@@ -194,10 +212,10 @@ PROBE='env | grep -E "^(GITHUB_TOKEN|DEMO_API_KEY|DATABASE_URL|SAFE_LANE_TOKEN|T
 if GITHUB_TOKEN=gh_secret DEMO_API_KEY=ak_secret DATABASE_URL=postgres://prod \
    SAFE_LANE_TOKEN=allowed-through OVERLORD_PASS_ENV="SAFE_LANE_TOKEN" \
    OVERLORD_WORKER_CMD="$PROBE" OVERLORD_WORKER_TIMEOUT=60 \
-   "$KIT/bin/worker" demo5 "$KIT/examples/demo-task.md" > /tmp/overlord-smoke-5.log 2>&1; then
+   "$KIT/bin/worker" demo5 "$KIT/examples/demo-task.md" > "$SMOKE_TMP/5.log" 2>&1; then
     ok "bin/worker demo5 ran"
 else
-    bad "bin/worker demo5 failed (see /tmp/overlord-smoke-5.log)"
+    bad "bin/worker demo5 failed (see $SMOKE_TMP/5.log)"
 fi
 PROBE_FILE="$W5/env-probe.txt"
 check "env probe committed" test -f "$PROBE_FILE"
@@ -215,12 +233,12 @@ esac
 # Control characters in a profile refuse the launch, before any worker runs.
 printf 'TASK_ONLY_TOKEN=bad\x01value\n' > .overlord/profiles/democtl.env
 if OVERLORD_WORKER_CMD="$STUB_FIX" OVERLORD_WORKER_TIMEOUT=60 \
-    "$KIT/bin/worker" democtl "$KIT/examples/demo-task.md" > /tmp/overlord-smoke-5c.log 2>&1; then
+    "$KIT/bin/worker" democtl "$KIT/examples/demo-task.md" > "$SMOKE_TMP/5c.log" 2>&1; then
     bad "worker launched despite a control character in its profile"
 else
     ok "control character in profile refused the launch"
 fi
-check "refusal names the control character" grep -qi "control character" /tmp/overlord-smoke-5c.log
+check "refusal names the control character" grep -qi "control character" "$SMOKE_TMP/5c.log"
 rm -f .overlord/profiles/demo5.env .overlord/profiles/democtl.env
 
 echo "== scenario 6: example usage collector (fixture -> meters -> pacing) =="
@@ -229,20 +247,20 @@ if command -v node >/dev/null 2>&1; then
     if [ "${node_major:-0}" -lt 20 ] 2>/dev/null; then
         echo "== node < 20 found — skipping the collector scenario =="
     else
-        if node --test tests/example-collector.test.mjs pacing/pace.test.mjs > /tmp/overlord-smoke-6.log 2>&1; then
+        if node --test tests/example-collector.test.mjs pacing/pace.test.mjs > "$SMOKE_TMP/6.log" 2>&1; then
             ok "collector + pacing unit tests pass"
         else
-            bad "unit tests failed (see /tmp/overlord-smoke-6.log)"
+            bad "unit tests failed (see $SMOKE_TMP/6.log)"
         fi
-        smoke_meters="$(mktemp -d)/meters.json"
+        smoke_meters="$SMOKE_TMP/meters.json"
         if node collectors/example-collector/collector.mjs --pool smoke-plan \
             --fixture collectors/example-collector/fixtures/cli-status.txt \
-            --burn-per-lane-hour 4 --meters "$smoke_meters" > /tmp/overlord-smoke-6b.log 2>&1 \
+            --burn-per-lane-hour 4 --meters "$smoke_meters" > "$SMOKE_TMP/6b.log" 2>&1 \
             && grep -q '"usedPercent": 40' "$smoke_meters" \
-            && "$KIT/bin/pace" "$smoke_meters" --json 2>>/tmp/overlord-smoke-6b.log | grep -q '"smoke-plan"'; then
+            && "$KIT/bin/pace" "$smoke_meters" --json 2>>"$SMOKE_TMP/6b.log" | grep -q '"smoke-plan"'; then
             ok "collector output paces (bin/pace reads what it wrote)"
         else
-            bad "collector -> bin/pace chain failed (see /tmp/overlord-smoke-6b.log)"
+            bad "collector -> bin/pace chain failed (see $SMOKE_TMP/6b.log)"
         fi
         rm -f "$smoke_meters"
     fi
@@ -255,10 +273,10 @@ echo "== scenario 7: merge-when-green hands the merge to the platform =="
 # auto-merge is enabled through gh; local main must not move.
 : > "$FAKE_GH_LOG"
 main_before7="$(git -C "$DEMO_REPO" rev-parse main)"
-if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo3 > /tmp/overlord-smoke-7.log 2>&1; then
+if PATH="$FAKE_PATH" FAKE_GH_CHECKS=pass "$KIT/bin/merge-when-green" --task demo3 > "$SMOKE_TMP/7.log" 2>&1; then
     ok "merge-when-green enabled auto-merge on green checks"
 else
-    bad "merge-when-green failed on green checks (see /tmp/overlord-smoke-7.log)"
+    bad "merge-when-green failed on green checks (see $SMOKE_TMP/7.log)"
 fi
 check "platform merge was requested (gh pr merge --auto)" grep -q "pr merge" "$FAKE_GH_LOG"
 if [ "$(git -C "$DEMO_REPO" rev-parse main)" = "$main_before7" ]; then
@@ -267,7 +285,7 @@ else
     bad "merge-when-green moved local main"
 fi
 : > "$FAKE_GH_LOG"
-if PATH="$FAKE_PATH" FAKE_GH_CHECKS=fail "$KIT/bin/merge-when-green" --task demo3 > /tmp/overlord-smoke-7b.log 2>&1; then
+if PATH="$FAKE_PATH" FAKE_GH_CHECKS=fail "$KIT/bin/merge-when-green" --task demo3 > "$SMOKE_TMP/7b.log" 2>&1; then
     bad "merge-when-green merged despite failing checks"
 else
     ok "merge-when-green refused failing checks"

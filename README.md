@@ -248,14 +248,18 @@ engine and tests.
 - Worker agents run with **edit permissions inside one isolated worktree**,
   push their branch, and stop; lanes never merge. A different model reviews
   every change.
-- **Workers get only the credentials their task needs**, via a per-task
-  profile (`.overlord/profiles/<task>.env`, outside worker-writable paths);
-  production credentials never reach workers. Worker and reviewer commands
-  start from an empty env (`env -i`) plus an allowlist (`PATH`, `HOME`,
-  `LANG`, `LC_*`, `TERM`, `TMPDIR`, configurable via `OVERLORD_ALLOW_ENV`,
-  plus `OVERLORD_PASS_ENV`).
+- **Environment variables are filtered per task**: workers get only the
+  variables their task needs, via a per-task profile
+  (`.overlord/profiles/<task>.env`, outside worker-writable paths), so
+  credentials exported in your shell do not reach them. Worker and reviewer
+  commands start from an empty env (`env -i`) plus an allowlist (`PATH`,
+  `HOME`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, configurable via
+  `OVERLORD_ALLOW_ENV`, plus `OVERLORD_PASS_ENV`).
 - **Env filtering is not a sandbox** — it only chooses which variables a
-  process starts with. For production secrets, run workers inside a
+  process starts with. `HOME` is passed through, so credentials kept in
+  files under it (for example `~/.config/gh`, `~/.ssh`, `~/.aws`) remain
+  readable by a worker running as your user. For production secrets, run
+  workers inside a
   container/VM or a separate account with no credentials, and give each task
   its own least-privilege token
   ([HOW-WE-WORK.md §1](HOW-WE-WORK.md#1-the-shape-coordinator-lanes-reviewers)).

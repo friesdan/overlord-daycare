@@ -24,12 +24,14 @@ lane, and one unmocked test run can hit the production database.
 - **Per-task profiles.** Each worker starts from an empty env (`env -i`) plus
   a small allowlist and a per-task profile holding only the credentials that
   task needs (the kit: `.overlord/profiles/<task>.env`, kept outside
-  worker-writable paths). Production credentials never reach workers: if a
-  lane must touch a service, it gets its own scoped token for that — never
-  the production one, and never a shared one.
+  worker-writable paths). Credentials exported in the launching shell do not
+  reach workers: if a lane must touch a service, it gets its own scoped token
+  for that — never the production one, and never a shared one.
 - **Env filtering is not a sandbox.** The allowlist only chooses which
   variables a process starts with; it does not confine what the process can
-  do. For anything sensitive, run workers inside a container/VM or a separate
+  do. `HOME` is passed through, so credential files under it (`~/.config/gh`,
+  `~/.ssh`, `~/.aws`, ...) stay readable by a worker running as the same user.
+  For anything sensitive, run workers inside a container/VM or a separate
   account with no production access, and scope each token least-privilege
   (read-only where possible), rotating it with the task.
 

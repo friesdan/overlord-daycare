@@ -28,7 +28,8 @@ The worker starts from an empty env (env -i) plus a per-task allowlist: the
 base allowlist (PATH, HOME, LANG, LC_*, TERM, TMPDIR, OVERLORD_PASS_ENV) plus
 an optional per-task profile at .overlord/profiles/<task>.env holding only
 the credentials this task needs. Production credentials never belong there.
-Env filtering is not a sandbox — see HOW-WE-WORK.md.
+Env filtering is not a sandbox: HOME is passed through, so credential files
+under it (~/.config/gh, ~/.ssh, ~/.aws, ...) remain readable — see HOW-WE-WORK.md.
 After the worker commits, this script pushes the branch if a remote exists
 (and prints how to open the PR). Workers never merge.
 Exits non-zero if the worker command fails or commits nothing.
@@ -101,9 +102,9 @@ EOF
   (git add -A && git commit) on the current branch.
 - Push your branch (git push -u origin $branch) so a pull request can be
   opened from it. Never merge. Never touch other branches or checkouts.
-- You start with only the credentials this task needs (a per-task profile);
-  production credentials are never in your environment. Do not go looking
-  for more.
+- Your environment holds only the credentials this task needs (a per-task
+  profile). Do not go looking for more — in particular, do not read
+  credential files under the home directory.
 - When done (or blocked), print a short summary of what you changed and stop.
 EOF
 } > "$run_dir/prompt.md"
