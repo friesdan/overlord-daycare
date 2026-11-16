@@ -6,33 +6,34 @@
 
 ## 1. The shape: coordinator, lanes, reviewers
 
-- **Coordinator:** one persistent agent session. It reads reports, writes briefs, launches work, runs the merge pipeline, and talks to the owner. It does not write feature code.
-- **Lanes:** headless agent sessions, each in its own isolated checkout. One bounded job each: edit, test locally, commit, stop. Lanes never merge, never mark work ready, never talk to the owner.
-- **Reviewers:** models from a different family than the builder, reading the exact commit that will ship.
+- **Coordinator (the overlord):** one persistent agent session. It only plans, briefs, routes work, and talks to the owner. It does not write feature code and it does not merge.
+- **Lanes (workers):** headless agent sessions, each in its own git worktree on its own branch. One bounded job each: edit, test locally, commit, push the branch, open a pull request, stop. Workers never merge and never talk to the owner.
+- **Reviewers:** a different model than the one that wrote the change, reviewing the exact commit that will ship. The hosting platform performs the merge once checks and review gates are green.
 
 Why: a coordinator that stops to code stops coordinating — while it is heads-down, everything else stalls silently. Isolation (separate checkouts, one writer each) removes a whole class of collisions. Independent review catches blind spots, because a model reviewing its own output tends to agree with itself.
 
 The one exception: the coordinator may make a one-to-three-line mechanical unblocker itself (a missing generated line, taking one side verbatim in a conflict). Anything larger, including long investigations, is lane work with a diagnosis brief.
 
-### Credentials: worktrees isolate files, not secrets
+### Credentials: workers get only what their task needs
 
 A git worktree gives a lane its own files — and the same environment, keychain,
 and config directories as the shell that launched it. Isolation of files buys
 nothing for secrets: a shell profile that exports a live key hands it to every
 lane, and one unmocked test run can hit the production database.
 
-- **Scrub the lane environment.** Every lane launcher (the kit's `bin/worker`
-  and `bin/review`) unsets secret-shaped variables — `*_TOKEN`, `*_KEY`,
-  `*_SECRET`, `DATABASE_URL`, `AWS_*`, `STRIPE_*` — before the agent starts.
-  `OVERLORD_PASS_ENV="VAR1 VAR2"` is the explicit allowlist for the few
-  variables a lane genuinely needs (a CLI's own API key auth, a proxy).
-- **Keep production credentials out of worker shells entirely.** If a lane
-  must touch a service, it gets its own token for that — never the production
-  one, and never a shared one.
-- **Per-lane, least-privilege tokens.** Scope each token to the lane's job
-  (read-only where possible), rotate it with the lane, and revoke it when the
-  task merges. A token a lane cannot live without is a credential it should
-  not have.
+- **Per-task profiles.** Each worker starts from an empty env (`env -i`) plus
+  a small allowlist and a per-task profile holding only the credentials that
+  task needs (the kit: `.overlord/profiles/<task>.env`, kept outside
+  worker-writable paths). Credentials exported in the launching shell do not
+  reach workers: if a lane must touch a service, it gets its own scoped token
+  for that — never the production one, and never a shared one.
+- **Env filtering is not a sandbox.** The allowlist only chooses which
+  variables a process starts with; it does not confine what the process can
+  do. `HOME` is passed through, so credential files under it (`~/.config/gh`,
+  `~/.ssh`, `~/.aws`, ...) stay readable by a worker running as the same user.
+  For anything sensitive, run workers inside a container/VM or a separate
+  account with no production access, and scope each token least-privilege
+  (read-only where possible), rotating it with the task.
 
 ## 2. Compute: a usage dashboard decides how many lanes run
 
@@ -74,19 +75,19 @@ Keep a simple outcome ledger (task type, model, effort, accepted or not), review
 
 ## 4. The pipeline: draft to merge in stages
 
-1. **Draft work.** Lanes implement in drafts with a local loop: cheapest deterministic checks first (patterns reviewers usually flag), then model review, fix, re-review.
-2. **Scripted push.** One push script runs tests, type checks, and build, then pushes — one pipeline per checkout, lock-serialized. Why: hand-pushes skip checks under pressure; a script cannot forget.
-3. **Exact-head review.** On the precise commit that would merge, run the full set again. Approvals never carry across a new commit or a merge with the main branch. Why: "reviewed something close" is how unreviewed code ships — a catch-up merge can silently drop another change's logic with no textual conflict.
+1. **Draft work.** Each worker implements in its own worktree on its own branch, with a local loop: cheapest deterministic checks first (patterns reviewers usually flag), then model review, fix, re-review.
+2. **Push and open a PR.** The worker pushes its branch and opens a pull request, then stops. Workers never merge. Why a scripted push: hand-pushes skip checks under pressure; a script cannot forget.
+3. **Exact-head review.** A different model reviews the precise commit that would merge. Approvals never carry across a new commit or a catch-up with the base branch. Why: "reviewed something close" is how unreviewed code ships — a catch-up merge can silently drop another change's logic with no textual conflict.
 4. **Fix-versus-defer triage.** Judge every finding by real harm (next section), not the reviewer's label.
-5. **One ready change at a time.** Exactly one change occupies the merge lane; the lane is never held empty for a favorite — priority orders changes that are already clean. Why: serialized merges make every failure attributable to one change.
-6. **External review as backstop.** An outside bot reads the ready change cold. A perfect score merges; anything less is judged — fix, merge with the finding logged, or hold only that change. Why: the backstop proves you already did it right; if it keeps finding real problems, fix your earlier stages at the design level instead of paying for repeated external reviews.
-7. **Merge, then ship.** Merge on green checks with threads answered. Apply migrations, verify new schema is actually usable by the application (fresh tables often need explicit access grants), and deploy, grouping changes that landed together. Merging is not necessarily human: **the human sets the rules and the gates; the coordinator may merge on its own once you trust those gates** — start with every merge approved by hand, and hand over the merge button only when the gates have proven they catch what you would have caught.
+5. **One ready PR at a time.** Exactly one PR occupies the ready lane; the lane is never held empty for a favorite — priority orders PRs that are already clean. Why: serialized merges make every failure attributable to one change.
+6. **External review as backstop.** An outside bot reads the ready PR cold. A perfect score merges; anything less is judged — fix, merge with the finding logged, or hold only that PR. Why: the backstop proves you already did it right; if it keeps finding real problems, fix your earlier stages at the design level instead of paying for repeated external reviews.
+7. **The platform merges, then ship.** Branch protection with required checks — plus "branches must be up to date" (or a merge queue), so the checked result is the combined one — is the only path that advances the base branch. A small merge script enables auto-merge for the one ready PR when checks and review gates are green; the platform lands it. No local merge, no rollback. Then apply migrations, verify new schema is actually usable by the application (fresh tables often need explicit access grants), and deploy, grouping changes that landed together.
 
 **Spiral rule:** the same class of finding in roughly three consecutive rounds means stop patching sites — fix the underlying design once (one shared rule, helper, or test) or cut that scope. After a handful of total rounds on one change, decide explicitly: finish, split, or defer the rest, and tell the owner in one line.
 
 ### CI and gates
 
-The stages above rest on a stack of automated gates: fast checks before every push (a pre-push hook you never skip), CI on every push with the same checks plus the slow ones, review on the exact commit that will merge (any new push makes old results stale), independent review by a different model family with severity triage — only critical issues block, the rest become logged follow-ups with a trigger — and one ready change at a time, merged by a small script only when everything is green. Layered like this, cheap and deterministic first and expensive judgment last, the gates are what let the coordinator merge without a human watching. The layers, with the why for each and templates to copy, are written up in [`docs/ci-and-gates.md`](docs/ci-and-gates.md).
+The stages above rest on a stack of automated gates: fast checks before every push (a pre-push hook you never skip), CI on every push with the same checks plus the slow ones, review on the exact commit that will merge (any new push makes old results stale), independent review by a different model with severity triage — only critical issues block, the rest become logged follow-ups with a trigger — and branch protection that only advances the base branch through a green PR, with one ready PR at a time. Layered like this, cheap and deterministic first and expensive judgment last, the gates are what let the platform merge without a human watching. The layers, with the why for each and templates to copy, are written up in [`docs/ci-and-gates.md`](docs/ci-and-gates.md).
 
 ## 5. Fix versus defer: a short critical list
 
@@ -101,7 +102,7 @@ Reviewers generate far more findings than matter. Judging by consequence keeps t
 ## 6. The heartbeat and watchers
 
 - A scheduler wakes the coordinator about every thirty minutes. The scheduled prompt holds no instructions — one line pointing at a single checklist file, which is the only place heartbeat behavior lives. Why: a pointer, not a copy, gives one source of truth; duplicated instructions drift apart within weeks.
-- Each heartbeat: read the dashboard and rebalance lanes; survey every open change and running lane; act on stalls; refill the merge lane; check watchers; update the handoff and board if anything changed; otherwise log one line and stop. If nothing has merged by midday, that is a blocker to fix, not a status to report.
+- Each heartbeat: read the dashboard and rebalance lanes; survey every open PR and running lane; act on stalls; refill the ready lane (one PR with auto-merge enabled); check watchers; update the handoff and board if anything changed; otherwise log one line and stop. If nothing has merged by midday, that is a blocker to fix, not a status to report.
 
 **Watchers** report events between heartbeats:
 
@@ -162,8 +163,8 @@ Build in this order, growing each piece only when its absence has actually hurt:
 
 1. **Values file** — one page: who decides what, your critical list, three or four defaults.
 2. **Coordinator manual** — role, delegate-don't-code rule, pipeline stages. The companion skill in this package is a ready starting point; adapt its placeholders.
-3. **One lane launcher plus finisher** — headless agent in an isolated checkout, credentials stripped, effort explicit, brief file as input; the finisher commits, pushes, and reports so no lane needs babysitting.
-4. **Push script and exact-head checks script** — tests and build in the push; full review on the exact commit. These two are the pipeline's spine.
+3. **One lane launcher** — headless agent in an isolated worktree on its own branch, per-task env profile, effort explicit, brief file as input; it commits, pushes, opens a PR, and reports so no lane needs babysitting.
+4. **Required checks and exact-head review** — CI on the PR plus full review on the exact commit, enforced by branch protection (optionally a merge queue). These are the pipeline's spine.
 5. **Handoff file and heartbeat** — one live-state file, plus a thirty-minute scheduled prompt that only points at a checklist. Update the handoff every heartbeat from day one.
 6. **Two compaction hooks** — pre-compaction snapshot, post-compaction re-injection. Cheap, and they pay off at the first survived summary.
 7. **Status board** — start with one row per open change (origin, next step); add program progress files at the first multi-change effort and the Decisions tab when chat questions deserve a permanent home.

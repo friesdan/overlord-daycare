@@ -30,7 +30,7 @@ if [ -f "$OVERLORD_CONFIG" ]; then
     # shellcheck disable=SC1090
     . "$OVERLORD_CONFIG"
     info "project : ${OVERLORD_PROJECT_DIR:-?}  (base: ${OVERLORD_BASE_BRANCH:-?})"
-    info "approval: ${OVERLORD_APPROVAL_RULE:-human}"
+    info "merging : hosting platform (branch protection + required checks; see docs/ci-and-gates.md)"
     echo
 else
     info "project : (not configured — run ./init)"
@@ -45,13 +45,11 @@ for task in $tasks; do
     branch="$(state_get "$task" branch)"
     worktree="$(state_get "$task" worktree)"
     verdict="$(state_get "$task" review_verdict)"
-    tests="$(state_get "$task" tests)"
     next="$(state_get "$task" next_step)"
     updated="$(state_get "$task" updated)"
 
     info "## $task — ${status:-?} (updated ${updated:-?})"
     [ -n "$branch" ] && info "   branch : $branch"
-    [ -n "$tests" ] && info "   tests  : $tests"
     [ -n "$verdict" ] && info "   review : $verdict"
     [ -n "$worktree" ] && info "   tree   : $worktree"
     [ -n "$next" ] && info "   next   : $next"

@@ -17,15 +17,16 @@ usage: bin/review <task-name>
 Run the reviewer AI command on the full diff base...mt/<task-name> and save
 its output to .overlord/runs/<task-name>/review.md. The verdict is recorded
 in STATE.md bound to the exact commit SHA (and branch) it was rendered on;
-bin/check-and-merge will not merge any other commit on that approval.
+bin/merge-when-green refuses to enable auto-merge for any other commit, and
+the platform's required checks re-run on every new head regardless.
 
 The reviewer should be a DIFFERENT model/CLI than the worker — an independent
-reviewer catches blind spots the builder shares (HOW-WE-WORK.md §1). Like the
-worker, it runs with secret-shaped environment variables scrubbed.
+reviewer catches blind spots the builder shares (HOW-WE-WORK.md §1). It runs
+from an empty env (env -i) plus the base allowlist, with no task credentials.
 
 Exit codes: 0 = VERDICT: CLEAN, 2 = VERDICT: FINDINGS, 1 = error
 (bad task, empty diff, reviewer failed, or no recognizable verdict line).
-Never pushes; the reviewer is expected to be read-only.
+Read-only; the reviewer never pushes and never merges.
 EOF
 }
 
@@ -86,10 +87,9 @@ export OVERLORD_TASK="$task"
 
 info "==> running reviewer on $branch ($commit): $OVERLORD_REVIEWER_CMD"
 info "    (output: $run_dir/review.md; timeout: ${OVERLORD_REVIEWER_TIMEOUT}s)"
-info "    env: secret-shaped variables scrubbed like the worker's (OVERLORD_PASS_ENV to allow)"
+info "    env: empty env (env -i) + base allowlist (no task profile, no credentials)"
 rc=0
-( lane_scrub_env
-  cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_REVIEWER_TIMEOUT" "$OVERLORD_REVIEWER_CMD" ) \
+( cd "$OVERLORD_PROJECT_DIR" && run_bounded "$OVERLORD_REVIEWER_TIMEOUT" "$OVERLORD_REVIEWER_CMD" ) \
     2>&1 | tee "$run_dir/review.md" || rc=$?
 
 state_set "$task" last_step "review"
@@ -109,19 +109,19 @@ Full output: $run_dir/review.md"
 fi
 
 state_set "$task" review_verdict "$verdict"
-# Bind the verdict to the exact commit it was rendered on, so the merge gate
-# can refuse to let a later commit inherit this approval.
+# Bind the verdict to the exact commit it was rendered on, so neither
+# merge-when-green nor the platform lets a later commit inherit it.
 state_set "$task" review_commit "$commit"
 state_set "$task" review_branch "$branch"
-state_set "$task" next_step "check-and-merge"
+state_set "$task" next_step "merge-when-green"
 
 if [ "$verdict" = "CLEAN" ]; then
     info "==> review verdict: CLEAN"
-    info "    next: bin/check-and-merge $task"
+    info "    next: bin/merge-when-green --task $task (platform merges when checks pass)"
     exit 0
 else
     info "==> review verdict: FINDINGS — read $run_dir/review.md"
-    info "    fix them (rerun a worker round or edit by hand), or judge them"
-    info "    non-blocking at the merge gate: bin/check-and-merge $task"
+    info "    fix them (rerun a worker round or edit by hand), push, and re-review"
+    info "    the new head; only a CLEAN review on the exact head can merge."
     exit 2
 fi

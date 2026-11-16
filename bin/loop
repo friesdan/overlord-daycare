@@ -2,10 +2,11 @@
 # bin/loop [--yes] <task-name> <task-file>
 #
 # The whole supervised pilot in one command:
-#   1. bin/worker    — AI fixes the task in an isolated worktree
-#   2. bin/review    — a different AI reviews the diff
-#   3. bin/check-and-merge — tests, summary, human approval, merge
+#   1. bin/worker          — AI fixes the task in an isolated worktree, pushes
+#   2. bin/review          — a different AI reviews the diff
+#   3. bin/merge-when-green — ask the platform to merge the PR when green
 # Stops at the first failing step; STATE.md always says where you are.
+# Workers never merge; the hosting platform does (docs/ci-and-gates.md).
 set -u
 # shellcheck disable=SC1091  # path is relative to this script
 
@@ -15,14 +16,15 @@ usage() {
     cat <<'EOF'
 usage: bin/loop [--yes] <task-name> <task-file>
 
-Run worker -> review -> check-and-merge for one task.
+Run worker -> review -> merge-when-green for one task.
 
-  --yes         pass human approval to the merge gate (demos, CI)
+  --yes         enable platform auto-merge when green (otherwise check-only:
+                report PR status and leave the merge to you)
   task-name     short slug; becomes branch mt/<task-name>
   task-file     markdown brief for the worker
 
 Every step also runs on its own (bin/worker, bin/review,
-bin/check-and-merge) — loop just chains them. Never pushes.
+bin/merge-when-green). The platform merges; this kit never merges locally.
 EOF
 }
 
@@ -43,7 +45,7 @@ valid_task_name "$task" || die "invalid task name '$task'"
 
 load_config
 
-info "=== loop: $task — worker -> review -> merge gate ==="
+info "=== loop: $task — worker -> review -> platform merge ==="
 info "    project: $OVERLORD_PROJECT_DIR (base: $OVERLORD_BASE_BRANCH)"
 
 if ! "$OVERLORD_KIT/bin/worker" "$task" "$task_file"; then
@@ -55,10 +57,17 @@ review_rc=0
 if [ "$review_rc" -eq 1 ]; then
     die "loop stopped: review step errored for '$task' (see .overlord/runs/$task/review.md)"
 fi
-# rc 2 = FINDINGS: proceed to the gate — the human (or the auto rule) judges.
+if [ "$review_rc" -eq 2 ]; then
+    die "loop stopped: review verdict is FINDINGS for '$task' — fix, push, re-review (see .overlord/runs/$task/review.md)"
+fi
 
+# Review is CLEAN on the exact head. Hand the merge to the platform: with
+# --yes, enable auto-merge; without it, report status only. No PR yet (demo,
+# no remote) is guidance, not a failure — the branch is pushed and reviewed.
 if [ "$yes_flag" -eq 1 ]; then
-    "$OVERLORD_KIT/bin/check-and-merge" --yes "$task"
+    "$OVERLORD_KIT/bin/merge-when-green" --task "$task"
 else
-    "$OVERLORD_KIT/bin/check-and-merge" "$task"
+    if ! "$OVERLORD_KIT/bin/merge-when-green" --task "$task" --check-only; then
+        info "loop: PR for '$task' is not green yet (or not open) — when it is, run: bin/merge-when-green --task $task"
+    fi
 fi

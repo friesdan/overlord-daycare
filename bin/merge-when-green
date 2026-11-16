@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# bin/merge-when-green [--task <task-name> | <pr>] [--check-only]
+#
+# Thin example: ask the hosting platform to merge a pull request once it is
+# green. The platform does the merging — branch protection with required
+# checks (and optionally a merge queue) guarantees the base branch only
+# advances through a PR whose combined result already passed CI. This script
+# never merges locally, never rolls back, and holds no lock: it reads PR
+# status through the platform CLI (`gh`) and enables auto-merge.
+#
+# Setup (branch protection, required checks, merge queue) is documented in
+# docs/ci-and-gates.md. Workers push branches and open PRs; they never merge.
+set -u -o pipefail
+# shellcheck disable=SC1091  # path is relative to this script
+
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() {
+    cat <<'EOF'
+usage: bin/merge-when-green [--task <task-name> | <pr-number-or-branch>] [--check-only] [--merge-method merge|squash|rebase]
+
+Ask the hosting platform to merge one pull request when it is green.
+
+  <pr>               PR number, URL, or head branch (e.g. 42 or mt/my-task)
+  --task <name>      resolve the PR from the task's branch mt/<name> and also
+                     enforce the local review binding (see below)
+  --check-only       report status only; do not enable auto-merge
+  --merge-method M   merge commit method for auto-merge (default: squash)
+
+The platform merges, not this script: branch protection requires the PR's
+checks to pass on the exact head (with "branches must be up to date" or a
+merge queue, the combined result is what gets checked). This script only:
+  1. reads the PR head, draft state, review decision, and check status
+     via `gh pr view` / `gh pr checks`,
+  2. refuses (exit 2) if checks are pending/failing, the PR is a draft, a
+     review requested changes, or — with --task — the recorded independent
+     review is missing, FINDINGS, or bound to a different commit,
+  3. runs `gh pr merge --auto` so the platform merges the moment its gates
+     go green. Re-run any time; it is idempotent.
+
+One PR is "ready" at a time by convention: pass exactly one PR per call.
+Exit codes: 0 = auto-merge enabled (or already merged / check-only green),
+1 = error (no gh, PR not found, bad usage), 2 = not green, merge refused.
+EOF
+}
+
+check_only=0
+merge_method="squash"
+task=""
+pr_ref=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --check-only) check_only=1 ;;
+        --task) shift; task="${1:-}" ; [ -n "$task" ] || { usage >&2; exit 1; } ;;
+        --merge-method) shift; merge_method="${1:-}" ;;
+        --help|-h) usage; exit 0 ;;
+        -*) die "unknown option: $1 (try --help)" ;;
+        *)  if [ -n "$pr_ref" ]; then die "too many arguments: $1 (one PR at a time — try --help)"; fi
+            pr_ref="$1" ;;
+    esac
+    shift
+done
+
+case "$merge_method" in
+    merge|squash|rebase) ;;
+    *) die "merge method must be merge|squash|rebase, got: $merge_method" ;;
+esac
+
+command -v gh >/dev/null 2>&1 || die "the platform CLI 'gh' was not found on PATH.
+This example drives the hosting platform through gh (see docs/ci-and-gates.md
+for branch-protection setup). Install gh, or adapt this script to your
+platform's CLI — the shape (read checks, enable auto-merge) stays the same."
+
+# Resolve the PR reference. --task wins: the branch names the PR, and the
+# local review record (if any) binds the approval to an exact commit.
+if [ -n "$task" ]; then
+    valid_task_name "$task" || die "invalid task name '$task'"
+    load_config
+    pr_ref="$(task_branch "$task")"
+fi
+[ -n "$pr_ref" ] || { usage >&2; exit 1; }
+
+# ---- 1. Read the PR through the platform ------------------------------------
+pr_json="$(gh pr view "$pr_ref" --json number,url,state,headRefName,headRefOid,isDraft,reviewDecision 2>&1)" || {
+    printf '%s\n' "$pr_json" >&2
+    die "could not read PR '$pr_ref' via gh — is it pushed and open? (workers push a branch and open a PR; see README)"
+}
+# Parse the few fields we need without requiring jq.
+json_get() { # json_get <key> — string value or empty
+    printf '%s' "$pr_json" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -1
+}
+json_get_bool() { # json_get_bool <key> — true/false or empty
+    printf '%s' "$pr_json" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\\(true\\|false\\).*/\\1/p" | head -1
+}
+pr_number="$(json_get number)"
+[ -n "$pr_number" ] || pr_number="$pr_ref"
+pr_state="$(json_get state)"
+head_sha="$(json_get headRefOid)"
+head_branch="$(json_get headRefName)"
+is_draft="$(json_get_bool isDraft)"
+review_decision="$(json_get reviewDecision)"
+
+info "==> PR #$pr_number ($head_branch @ ${head_sha:0:12}) state=${pr_state:-?} draft=${is_draft:-?} review=${review_decision:-none}"
+
+if [ "$pr_state" = "MERGED" ]; then
+    info "already merged by the platform — nothing to do."
+    exit 0
+fi
+[ "$pr_state" = "OPEN" ] || die "PR #$pr_number is not open (state: ${pr_state:-unknown})"
+
+# ---- 2. Gates: draft, review, checks ----------------------------------------
+if [ "$is_draft" = "true" ]; then
+    info "refused: PR #$pr_number is still a draft — mark it ready, then re-run."
+    exit 2
+fi
+if [ "$review_decision" = "CHANGES_REQUESTED" ]; then
+    info "refused: PR #$pr_number has changes requested — address the review, push, re-review."
+    exit 2
+fi
+
+# Local review binding (only with --task, only when a review was recorded):
+# the independent review names the exact commit it saw. A moved head makes
+# it stale — the platform's own stale-review dismissal is the backstop, this
+# is the early, explicit refusal.
+if [ -n "$task" ]; then
+    review_sha="$(state_get "$task" review_commit)"
+    verdict="$(state_get "$task" review_verdict)"
+    if [ -z "$review_sha" ]; then
+        info "refused: no review recorded for task '$task' — run bin/review $task on the exact head first."
+        exit 2
+    fi
+    if [ "$verdict" != "CLEAN" ]; then
+        info "refused: review verdict for '$task' is '${verdict:-none}' — only CLEAN merges (read .overlord/runs/$task/review.md)."
+        exit 2
+    fi
+    if [ -n "$head_sha" ] && [ "$review_sha" != "$head_sha" ]; then
+        info "refused: stale review for '$task' (reviewed ${review_sha:0:12}, PR head ${head_sha:0:12}) — re-run bin/review $task."
+        exit 2
+    fi
+fi
+
+checks_out="$(gh pr checks "$pr_number" 2>&1)"
+checks_rc=$?
+printf '%s\n' "$checks_out"
+if [ "$checks_rc" -ne 0 ]; then
+    info "refused: checks for PR #$pr_number are not green yet (gh pr checks exited $checks_rc) — the platform will not merge, and neither will this script."
+    exit 2
+fi
+
+if [ "$check_only" -eq 1 ]; then
+    info "green: PR #$pr_number checks pass — merge-when-green would enable auto-merge (check-only, nothing changed)."
+    exit 0
+fi
+
+# ---- 3. Hand the merge to the platform --------------------------------------
+info "==> enabling auto-merge on PR #$pr_number (--$merge_method); the platform merges when its gates pass"
+if gh pr merge "$pr_number" --auto --"$merge_method"; then
+    if [ -n "$task" ]; then
+        state_set "$task" status "ready (auto-merge enabled)"
+        state_set "$task" last_step "merge-when-green"
+        state_set "$task" next_step "platform merges PR #$pr_number when required checks pass; then bin/status"
+    fi
+    info "auto-merge enabled for PR #$pr_number. The base branch advances only through the platform — no local merge was performed."
+    exit 0
+else
+    die "gh pr merge --auto failed for PR #$pr_number (see output above)"
+fi
