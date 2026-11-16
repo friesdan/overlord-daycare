@@ -1,16 +1,16 @@
-# CI and gates: the layers that let the coordinator merge
+# CI and gates: the platform merges, the gates decide
 
-In [HOW-WE-WORK.md](../HOW-WE-WORK.md) the pipeline says the coordinator may
-merge on its own "once you trust those gates." This guide is what those gates
-are: a stack of automated layers, cheapest first, each one catching what it
-catches for a fraction of the cost of the layer above it. Layered gates are the
-whole reason a coordinator can be allowed to merge without a human watching —
-not because the coordinator is trusted, but because the gates are.
+In [HOW-WE-WORK.md](../HOW-WE-WORK.md) the pipeline ends with the hosting
+platform merging a pull request. This guide is the setup that makes that safe:
+a stack of automated layers, cheapest first, ending in branch protection that
+only lets the base branch advance through a PR whose combined result already
+passed CI. There is no local merge and no rollback to build — the platform is
+the merge engine.
 
 > **A gate you have to remember to run is not a gate.** Every layer below is a
-> hook, a script, or a bot — something that cannot forget a step, cannot be
-> talked out of it under pressure, and cannot play favorites. The human sets
-> the gates; the machinery applies them; the coordinator merges only on green.
+> hook, a CI job, or a platform rule — something that cannot forget a step,
+> cannot be talked out of it under pressure, and cannot play favorites. The
+> human sets the gates once; the platform applies them to every PR.
 
 This repo runs the smallest version of the stack
 ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)); the templates to
@@ -32,9 +32,7 @@ chmod +x .git/hooks/pre-push
 
 **Why a hook and not a habit:** the moment you most want to skip checks —
 "just this once, the fix is obvious" — is precisely the moment mistakes ship.
-A habit bends under pressure; a script does not. It is the same reason the
-method gives lanes a scripted push ([HOW-WE-WORK.md §4](../HOW-WE-WORK.md#4-the-pipeline-draft-to-merge-in-stages)):
-a script cannot forget.
+A habit bends under pressure; a script does not.
 
 **The rule that makes the whole stack work: never skip it.** `--no-verify`
 exists; using it is how "reviewed something close" starts. If a check is
@@ -54,30 +52,69 @@ clean room. The merge decision reads CI's answer, never the laptop's, so
 re-running the fast checks there costs a few machine-minutes and buys an
 environment everyone trusts.
 
-**Optional, for heavy suites:** a self-hosted runner on a spare machine runs
-the slow jobs without spending hosted CI minutes. Give the heavy jobs their own
-runner lane (a label they select with `runs-on`) so a long build never blocks
-the quick checks — the quick lane is the one the coordinator waits on, and a
-fast red answer is worth more than a slow green one.
+## Layer 2: branch protection — the platform does the merging
+
+Branch protection is the layer that replaces any hand-rolled merge script.
+On the base branch, enable:
+
+- **Require a pull request before merging** — no direct pushes to the base
+  branch, ever. Every change arrives as a PR from a worker's branch.
+- **Required status checks** — select the CI jobs from Layer 1. A PR cannot
+  merge while any required check is pending or failing.
+- **Require branches to be up to date before merging** — the PR must contain
+  the current base branch, so the checks that passed ran on the *combined*
+  result (your change plus everything that landed since you branched), not
+  on your branch alone. This is the property a local "merge then re-test,
+  roll back on failure" script tries to recreate by hand; the platform gives
+  it to you directly, with no rollback because the bad combination never
+  merges in the first place.
+- **Require review approval from a different model than the author** (your
+  reviewer lane or review bot posts the approval), and **dismiss stale
+  reviews when new commits are pushed** — a new head voids old approvals.
+- **Do not allow bypassing the above settings** for worker accounts.
+
+With those on, the base branch can only advance through a PR whose combined
+result already passed CI. The kit's [`bin/merge-when-green`](../bin/merge-when-green)
+is the thin client for this layer: it reads check and review status through
+the platform CLI (`gh pr checks`, `gh pr view`) and enables auto-merge
+(`gh pr merge --auto`). It never merges locally.
+
+```bash
+# one ready PR at a time:
+bin/merge-when-green 42                 # enable auto-merge when green
+bin/merge-when-green --task my-task     # same, plus the kit's exact-head
+                                        # review binding for that task
+bin/merge-when-green 42 --check-only    # report status, change nothing
+```
+
+### Optional: a merge queue
+
+If several PRs are often ready at once, enable the platform's **merge queue**
+instead of (or as well as) "branches must be up to date". The queue merges
+PRs one at a time, testing each against the base branch *plus everything
+ahead of it in the queue*, and only lands the combinations that pass. It is
+the same guarantee — the base branch only advances through green combined
+results — without authors rebasing by hand. Keep the queue's required checks
+identical to the branch's, or the guarantee has a hole.
 
 ## The exact-head rule
 
 Every check and every review runs on the **exact commit that will merge**. Any
-new push — a fix, a rebase, a catch-up merge with the main branch — makes every
+new push — a fix, a rebase, a catch-up merge with the base branch — makes every
 previous result stale, and the full set runs again on the new head. Approvals
 attach to commits, never to branches or people.
 
 **Why:** "reviewed something close" is how unreviewed code ships. The
 dangerous case is the catch-up merge: bringing your change up to date with the
-main branch can silently drop another change's logic with *no textual
+base branch can silently drop another change's logic with *no textual
 conflict*, so an old green review plus a fresh build is not green. Stale is
 stale, even when the diff looks tiny.
 
-The starter kit enforces this at its merge gate: `bin/review` records the
-commit SHA it reviewed, and `bin/check-and-merge` refuses to merge (exit 2)
-unless that SHA is exactly the branch head — then merges that exact SHA,
-re-verified just before the merge. A commit added after a CLEAN review never
-inherits it.
+Branch protection enforces most of this (required checks re-run per head;
+stale reviews dismissed on push). The kit adds the same binding for its local
+review record: `bin/review` records the commit SHA it reviewed, and
+`bin/merge-when-green --task <task>` refuses (exit 2) unless that SHA is
+exactly the PR head.
 
 ## Independent review, then severity triage
 
@@ -117,22 +154,18 @@ final full pass misses the bugs that come from *interactions between rounds* —
 round five's fix quietly undoing round two's fix. Delta rounds keep review
 cheap; the one full pass is the net that justifies them.
 
-## One ready change at a time, merged by a script
+## One ready change at a time
 
 Exactly one change occupies the **ready** lane — the one whose CI and reviews
-are being spent on now. A small merge script merges it the moment everything is
-green (checks passed, review verdict clean, exact head confirmed), then the
-next clean change moves into the lane. The lane is never held empty waiting for
-a favorite.
+are being spent on now, with auto-merge enabled. The platform merges it the
+moment everything is green (checks passed, review clean, exact head
+confirmed), then the next clean change moves into the lane. The lane is never
+held empty waiting for a favorite.
 
 **Why:** serialized merges make every failure attributable to exactly one
 change, and they keep CI and reviewers from being spread thin across many
-half-checked changes. The merging is done by a script for the same reason as
-every other layer: a script cannot forget a step of the checklist, cannot be
-persuaded to merge "just this once," and cannot play favorites about what
-merges next. The starter kit's merge gate — tests re-run plus a CLEAN
-independent verdict bound to the exact head — is the smallest version of that
-script.
+half-checked changes. `bin/merge-when-green` takes exactly one PR per call for
+this reason.
 
 ## The spiral breaker
 
@@ -170,10 +203,11 @@ doing exactly its job.
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | This kit's own CI: the smoke test plus the pacing engine's unit tests, on every push and pull request. |
 | [`examples/github-actions/ci.yml`](../examples/github-actions/ci.yml) | The commented template to copy into your own project — same layer structure. |
 | [`examples/hooks/pre-push`](../examples/hooks/pre-push) | The pre-push hook template to copy into `.git/hooks/`. |
+| [`bin/merge-when-green`](../bin/merge-when-green) | Thin example: enable platform auto-merge for one green PR. Setup is the branch protection above. |
 
 Grow the stack in the order above, and only when a layer's absence has actually
 hurt ([HOW-WE-WORK.md §11](../HOW-WE-WORK.md#11-start-small-bootstrap-checklist)):
-hook first, CI second, exact-head review third, the ready lane and merge script
+hook first, CI second, branch protection third, the ready lane and merge queue
 once there is more than one change moving. The method is the layering — cheap
 deterministic gates first, expensive human-or-model judgment last, and nothing
 merges on stale results.

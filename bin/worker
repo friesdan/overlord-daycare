@@ -3,8 +3,9 @@
 #
 # Create an isolated git worktree + branch for the task, run the configured
 # worker command there with the task text plus a standard instruction block
-# (edit, run tests, commit, stop — never push), and log everything to
-# .overlord/runs/<task>/worker.log. Updates STATE.md.
+# (edit, run tests, commit, push the branch, stop — never merge), and log
+# everything to .overlord/runs/<task>/worker.log. Updates STATE.md. Merging
+# is the hosting platform's job (see bin/merge-when-green), never the worker's.
 set -u -o pipefail
 # shellcheck disable=SC1091  # path is relative to this script
 
@@ -23,10 +24,14 @@ record the run under .overlord/runs/<task-name>/.
 
 Environment overrides (see ./init): OVERLORD_WORKER_CMD, OVERLORD_WORKER_TIMEOUT, ...
 The worker command may reference "$PROMPT", "$PROMPT_FILE", "$OVERLORD_WORKTREE".
-The worker runs with a scrubbed environment: starting from an empty env
-(env -i) plus an explicit allowlist (PATH, HOME, LANG, LC_*, TERM, TMPDIR,
-and OVERLORD_PASS_ENV) — worktrees isolate files, not credentials.
-Never pushes. Exits non-zero if the worker command fails or commits nothing.
+The worker starts from an empty env (env -i) plus a per-task allowlist: the
+base allowlist (PATH, HOME, LANG, LC_*, TERM, TMPDIR, OVERLORD_PASS_ENV) plus
+an optional per-task profile at .overlord/profiles/<task>.env holding only
+the credentials this task needs. Production credentials never belong there.
+Env filtering is not a sandbox — see HOW-WE-WORK.md.
+After the worker commits, this script pushes the branch if a remote exists
+(and prints how to open the PR). Workers never merge.
+Exits non-zero if the worker command fails or commits nothing.
 EOF
 }
 
@@ -48,7 +53,7 @@ worktree="$(task_worktree "$task")"
 run_dir="$(task_run_dir "$task")"
 
 [ -e "$worktree" ] && die "worktree already exists: $worktree
-If the task is finished, merge it (bin/check-and-merge $task) or clean up:
+If the task is finished, push it and open its PR (or merge via bin/merge-when-green), or clean up:
   git -C \"$OVERLORD_PROJECT_DIR\" worktree remove --force \"$worktree\"
   git -C \"$OVERLORD_PROJECT_DIR\" branch -D \"$branch\"
 If the project was recreated since (e.g. re-running ./init --demo), git no
@@ -77,8 +82,9 @@ fi
     cat <<EOF
 # Task: $task
 
-Your job is a single bounded change in an isolated git worktree. A coordinator
-will review and merge it; you will not.
+Your job is a single bounded change in an isolated git worktree. Push your
+branch and stop; a different model reviews it and the hosting platform merges
+it. You never merge.
 
 ## The task (from $(basename "$task_file"))
 
@@ -93,9 +99,11 @@ EOF
 - Run the tests with: $OVERLORD_TEST_CMD
 - Fix the code until the tests pass, then stage and commit everything
   (git add -A && git commit) on the current branch.
-- Never push. Never merge. Never touch other branches or checkouts.
-- Do not use network credentials or anything secret (common secret-shaped
-  variables are already unset in your shell).
+- Push your branch (git push -u origin $branch) so a pull request can be
+  opened from it. Never merge. Never touch other branches or checkouts.
+- You start with only the credentials this task needs (a per-task profile);
+  production credentials are never in your environment. Do not go looking
+  for more.
 - When done (or blocked), print a short summary of what you changed and stop.
 EOF
 } > "$run_dir/prompt.md"
@@ -106,9 +114,14 @@ export PROMPT_FILE="$run_dir/prompt.md"
 export OVERLORD_WORKTREE="$worktree"
 export OVERLORD_TASK="$task"
 
+# Per-task profile: only the credentials this task needs. The profile lives
+# under .overlord/profiles/ — outside the worker-writable worktree — and any
+# control character in it refuses the launch (lib/common.sh).
+load_task_profile "$task" "$worktree"
+
 info "==> running worker (in $worktree): $OVERLORD_WORKER_CMD"
 info "    (log: $run_dir/worker.log; timeout: ${OVERLORD_WORKER_TIMEOUT}s)"
-info "    env: scrubbed with empty env (env -i) + allowlist (${OVERLORD_ALLOW_ENV:-PATH HOME ...}${OVERLORD_PASS_ENV:+; pass: $OVERLORD_PASS_ENV})"
+info "    env: empty env (env -i) + per-task allowlist (${OVERLORD_ALLOW_ENV:-PATH HOME ...}${OVERLORD_PASS_ENV:+; pass: $OVERLORD_PASS_ENV}; profile: $(task_env_profile "$task"))"
 rc=0
 ( cd "$worktree" && run_bounded "$OVERLORD_WORKER_TIMEOUT" "$OVERLORD_WORKER_CMD" ) \
     2>&1 | tee "$run_dir/worker.log" || rc=$?
@@ -132,6 +145,19 @@ Nothing to review. Check the log: $run_dir/worker.log"
 fi
 
 state_set "$task" next_step "review"
+
+# Push the branch so a pull request can be opened. With no remote (the demo,
+# a purely local project) this is skipped — the branch and worktree stay put.
+if git -C "$worktree" remote | grep -q .; then
+    if git -C "$worktree" push -u origin "$branch" >> "$run_dir/worker.log" 2>&1; then
+        info "==> pushed $branch — open its pull request, then: bin/review $task"
+    else
+        warn "git push of $branch failed (see $run_dir/worker.log) — push it by hand, then open the PR"
+    fi
+else
+    info "==> no git remote — branch stays local; add a remote, push $branch, and open its PR when ready"
+fi
+
 info "==> worker done: $commits commit(s) on $branch"
 info "    next: bin/review $task"
 exit 0

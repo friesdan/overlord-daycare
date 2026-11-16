@@ -6,17 +6,19 @@
 
 Website: https://overlord-daycare.danfries.us
 
-You pay for several AI subscriptions. Each has its own app, its own limits, its own reset clock. Some run out mid-week; others reset with allowance unused. Overlord Daycare gives you one place to talk to: a head overlord (a coordinator agent) that dispatches work to sub-overlords across every plan you pay for, paces each plan so it is spent evenly before reset, has a different model review every change, and merges when your gates pass. You set the rules once and check in whenever you like.
+You pay for several AI subscriptions. Each has its own app, its own limits, its own reset clock. Some run out mid-week; others reset with allowance unused. Overlord Daycare gives you one place to talk to: a head overlord (a coordinator agent) that dispatches work to sub-overlords across every plan you pay for, paces each plan so it is spent evenly before reset, and has a different model review every change. Workers push pull requests; the hosting platform merges them when the checks pass. You set the rules once and check in whenever you like.
 
 ## What's in the kit
 
 A small open-source starter kit for supervised AI coding: you (or a coordinator
 agent) hand a task to a **worker** AI, which fixes it in an isolated git
-worktree; the tests run; a **different** reviewer AI reads the diff; it merges.
-One command runs the whole loop. It implements the method described in
-[`HOW-WE-WORK.md`](HOW-WE-WORK.md) — read that for the reasoning; this repo is
-the runnable, minimal version: sensible defaults, everything else optional.
-Plain bash; needs only git and bash (python3 for the demo; jq not required).
+worktree on its own branch and pushes a pull request; a **different** reviewer
+AI reads the diff; the hosting platform merges when its checks pass. Workers
+never merge. One command runs the whole loop. It implements the method
+described in [`HOW-WE-WORK.md`](HOW-WE-WORK.md) — read that for the reasoning;
+this repo is the runnable, minimal version: sensible defaults, everything else
+optional. Plain bash; needs only git and bash (python3 for the demo; the
+platform CLI `gh` only for the merge step; jq not required).
 
 The kit is built for the multi-plan reality: you pay for several AI
 subscriptions, each with its own limits and its own reset clock. Pacing is the
@@ -50,32 +52,29 @@ You will see, in order:
 1. a git worktree + branch `mt/demo` created for the task (under
    `~/.overlord-daycare/worktrees/`),
 2. the **worker** run inside that worktree — it edits `calc.py`, runs the
-   tests, commits, and stops (log: `.overlord/runs/demo/worker.log`),
+   tests, commits, pushes the branch, and stops (log:
+   `.overlord/runs/demo/worker.log`),
 3. the **reviewer** run on `git diff main...mt/demo`, ending in a verdict line
    (saved: `.overlord/runs/demo/review.md`),
-4. the tests run again at the **merge gate**, a summary like:
+4. the PR status read through the platform — checks, review, exact head:
 
    ```
-   ================= merge gate: demo =================
-     tests   : pass
-     review  : CLEAN
-     commit  : 1a2b3c4d5e6f (reviewed: 1a2b3c4d5e6f)
-     diff    : 1 file changed, 1 insertion(+), 1 deletion(-)
-     branch  : mt/demo -> merge into main
-   =====================================================
-   Merge into main? [y/N]
+   ==> PR #42 (mt/demo @ 1a2b3c4d5e6f) state=OPEN draft=false review=APPROVED
+   checks: ci pass
+   green: PR #42 checks pass — merge-when-green would enable auto-merge
    ```
 
-5. answer `y` → the branch merges into `main`, the worktree is removed, and
-   nothing is ever pushed. Answer anything else → everything is left in place;
-   run `bin/check-and-merge demo` later to pick up at the merge gate
-   (`bin/status` always shows the next step). Without a terminal (a pipe, a
-   script) the gate treats the answer as "no" — approve with
-   `bin/loop demo examples/demo-task.md --yes` instead.
+In the demo there is no remote and no PR, so step 4 is guidance, not a merge:
+the branch stays reviewed and ready. On a real project the branch is already
+pushed, you open its PR, and `bin/merge-when-green --task demo` enables
+platform auto-merge once the required checks pass (branch protection setup:
+[`docs/ci-and-gates.md`](docs/ci-and-gates.md)). The platform merges; nothing
+in this kit merges locally. `bin/status` always shows the next step.
 
 `bin/status` shows where every task is (branch, last step, next step) from
-`STATE.md`; `./init --demo && bin/loop demo examples/demo-task.md --yes` runs
-the whole thing without a terminal prompt (that's what CI does, see
+`STATE.md`; `./init --demo && bin/loop demo examples/demo-task.md` runs the
+whole loop (with `--yes` it also enables auto-merge when a PR is green — that
+is what CI exercises with a stub platform CLI, see
 [`tests/smoke.sh`](tests/smoke.sh)).
 
 ## Use it on your own project
@@ -84,8 +83,8 @@ the whole thing without a terminal prompt (that's what CI does, see
 ./init
 ```
 
-Seven questions, each with a default (Enter accepts): target project path, base
-branch, test command, worker command, reviewer command, approval mode, worktree
+Six questions, each with a default (Enter accepts): target project path, base
+branch, test command, worker command, reviewer command, worktree
 directory. `./init` detects which of `claude`/`codex` you have and suggests
 command templates such as:
 
@@ -102,45 +101,43 @@ Then write a small task file — a few lines naming what breaks, for whom, and
 the scope (see `examples/demo-task.md` for the shape) — and run:
 
 ```bash
-bin/loop <task-name> <task-file>       # worker -> review -> merge gate
+bin/loop <task-name> <task-file>       # worker -> review -> platform merge
 ```
 
 or drive the stages yourself:
 
 | Command | What it does |
 | --- | --- |
-| `bin/worker <task> <task-file>` | worktree + branch `mt/<task>`, worker AI runs there (secrets scrubbed from its environment), commits, stops |
-| `bin/review <task>` | reviewer AI reads `diff <base>...mt/<task>`, writes `review.md` with a `VERDICT:` line, records the exact commit it reviewed |
-| `bin/check-and-merge <task>` | runs tests in the worktree, shows the summary, applies the approval rule, merges exactly the reviewed commit — a stale or missing review refuses (never pushes) |
-| `bin/loop <task> <task-file>` | all three in sequence |
+| `bin/worker <task> <task-file>` | worktree + branch `mt/<task>`, worker AI runs there with a per-task env profile, commits, pushes the branch, stops |
+| `bin/review <task>` | reviewer AI (different model) reads `diff <base>...mt/<task>`, writes `review.md` with a `VERDICT:` line, records the exact commit it reviewed |
+| `bin/merge-when-green [--task <task> \| <pr>]` | reads PR checks/review via the platform CLI and enables auto-merge when green — the platform merges; never merges locally |
+| `bin/loop <task> <task-file>` | all three in sequence (`--yes` enables auto-merge; otherwise check-only) |
 | `bin/status` | prints `STATE.md` + liveness of each task's branch/worktree |
 | `bin/pace [meters.json] [--json]` | prints per-pool pace and advised lanes from a meters file |
 
 Everything the kit writes is local and git-ignored: `.overlord/` (config, the
 filled skill copy, per-task logs) and `STATE.md`.
 
-### Who merges: the approval mode
+### Who merges: the platform
 
-Merging is not necessarily human. The principle: **the human sets the rules
-and the gates; the coordinator may merge on its own once you trust those
-gates.** Two modes, set in `.overlord/config.env` (`OVERLORD_APPROVAL_RULE`)
-or at init time:
+Workers never merge, and neither does this kit. Each worker pushes its branch
+and opens a pull request; **the hosting platform does the merging**:
 
-- `human` (default) — the merge gate asks `Merge into <base>? [y/N]` for every
-  merge. Start here.
-- `auto` — the coordinator merges without prompting, but **only** when the
-  tests pass AND the independent review verdict is CLEAN for the exact commit
-  being merged; anything else stops the train and leaves everything in place
-  for you. Switch to `auto` once the gates have caught everything you'd have
-  caught yourself.
+- Branch protection on the base branch requires a PR, required status checks,
+  and — with "branches must be up to date" (or a merge queue) — checks that
+  ran on the combined result, so the base branch only advances through a PR
+  that already passed CI. No local merge, no rollback.
+- One PR is **ready** at a time. When its checks and review gates are green,
+  `bin/merge-when-green` enables platform auto-merge for that PR
+  (`gh pr merge --auto`); the platform lands it.
+- A **different model** reviews each change than the one that wrote it, and
+  the approval binds to the exact commit: `bin/review` records the SHA it
+  reviewed, `bin/merge-when-green --task <task>` refuses a stale or missing
+  review, and the platform re-runs required checks on every new head.
 
-Either way the approval binds to the exact commit: `bin/review` records the
-commit SHA it reviewed, and the gate refuses (non-zero exit) when that SHA is
-not exactly the branch head — a commit added after a CLEAN review can never
-inherit it. Re-run `bin/review` on the new head.
-
-Neither mode ever pushes — pushing stays a human (or your explicit CI)
-decision.
+Setup (which checks to require, merge queue) is in
+[`docs/ci-and-gates.md`](docs/ci-and-gates.md). The coordinator — the overlord —
+only plans, briefs, routes, and talks to you; merging is not its job either.
 
 ### STATE.md: resuming after a restart
 
@@ -248,25 +245,26 @@ engine and tests.
 
 ## Safety notes
 
-- Worker agents run with **edit permissions inside one isolated worktree** and
-  are instructed to commit and stop; lanes never merge, never push.
-- **Worktrees isolate files, not credentials.** Environment filtering is not a
-  sandbox — for production secrets run the kit inside a container/VM or a
-  separate user with no credentials. Worker, reviewer, and final test commands
-  all run in a scrubbed environment starting from an empty env (`env -i`) plus
-  an explicit allowlist (`PATH`, `HOME`, `LANG`, `LC_*`, `TERM`, `TMPDIR`,
-  configurable via `OVERLORD_ALLOW_ENV`, plus any needed variables in
-  `OVERLORD_PASS_ENV`). Keep production credentials out of worker shells
-  entirely and give a lane its own least-privilege token when it needs one
+- Worker agents run with **edit permissions inside one isolated worktree**,
+  push their branch, and stop; lanes never merge. A different model reviews
+  every change.
+- **Workers get only the credentials their task needs**, via a per-task
+  profile (`.overlord/profiles/<task>.env`, outside worker-writable paths);
+  production credentials never reach workers. Worker and reviewer commands
+  start from an empty env (`env -i`) plus an allowlist (`PATH`, `HOME`,
+  `LANG`, `LC_*`, `TERM`, `TMPDIR`, configurable via `OVERLORD_ALLOW_ENV`,
+  plus `OVERLORD_PASS_ENV`).
+- **Env filtering is not a sandbox** — it only chooses which variables a
+  process starts with. For production secrets, run workers inside a
+  container/VM or a separate account with no credentials, and give each task
+  its own least-privilege token
   ([HOW-WE-WORK.md §1](HOW-WE-WORK.md#1-the-shape-coordinator-lanes-reviewers)).
 - **Approvals bind to the exact commit.** `bin/review` records the commit SHA
-  it reviewed; the merge gate refuses a stale or missing review and merges
-  exactly that SHA.
-- **The human sets the rules and the gates; the coordinator may merge on its
-  own once you trust those gates.** `human` mode is the default, and `auto`
-  still requires a CLEAN independent review plus green tests before merging.
-- Nothing here ever runs `git push` — pushing stays a human (or your explicit
-  CI) decision.
+  it reviewed; `bin/merge-when-green` refuses a stale or missing review, and
+  branch protection re-runs required checks on every new head.
+- **The platform merges.** Branch protection + required checks (optionally a
+  merge queue) are the merge engine; this kit only enables auto-merge for
+  the one ready, green PR.
 
 ## Development
 

@@ -31,14 +31,11 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     env_TEST_CMD="${OVERLORD_TEST_CMD-}"
     env_WORKER_CMD="${OVERLORD_WORKER_CMD-}"
     env_REVIEWER_CMD="${OVERLORD_REVIEWER_CMD-}"
-    env_APPROVAL_RULE="${OVERLORD_APPROVAL_RULE-}"
     env_WORKTREE_ROOT="${OVERLORD_WORKTREE_ROOT-}"
     env_WORKER_TIMEOUT="${OVERLORD_WORKER_TIMEOUT-}"
     env_REVIEWER_TIMEOUT="${OVERLORD_REVIEWER_TIMEOUT-}"
-    env_TEST_TIMEOUT="${OVERLORD_TEST_TIMEOUT-}"
     env_PASS_ENV="${OVERLORD_PASS_ENV-}"
     env_ALLOW_ENV="${OVERLORD_ALLOW_ENV-}"
-    env_TEST_PASS_ENV="${OVERLORD_TEST_PASS_ENV-}"
 
     # shellcheck disable=SC1090
     . "$OVERLORD_CONFIG"
@@ -48,14 +45,11 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     [ -n "$env_TEST_CMD" ]       && OVERLORD_TEST_CMD="$env_TEST_CMD"
     [ -n "$env_WORKER_CMD" ]     && OVERLORD_WORKER_CMD="$env_WORKER_CMD"
     [ -n "$env_REVIEWER_CMD" ]   && OVERLORD_REVIEWER_CMD="$env_REVIEWER_CMD"
-    [ -n "$env_APPROVAL_RULE" ]  && OVERLORD_APPROVAL_RULE="$env_APPROVAL_RULE"
     [ -n "$env_WORKTREE_ROOT" ]  && OVERLORD_WORKTREE_ROOT="$env_WORKTREE_ROOT"
     [ -n "$env_WORKER_TIMEOUT" ] && OVERLORD_WORKER_TIMEOUT="$env_WORKER_TIMEOUT"
     [ -n "$env_REVIEWER_TIMEOUT" ] && OVERLORD_REVIEWER_TIMEOUT="$env_REVIEWER_TIMEOUT"
-    [ -n "$env_TEST_TIMEOUT" ]   && OVERLORD_TEST_TIMEOUT="$env_TEST_TIMEOUT"
     [ -n "$env_PASS_ENV" ]       && OVERLORD_PASS_ENV="$env_PASS_ENV"
     [ -n "$env_ALLOW_ENV" ]      && OVERLORD_ALLOW_ENV="$env_ALLOW_ENV"
-    [ -n "$env_TEST_PASS_ENV" ]  && OVERLORD_TEST_PASS_ENV="$env_TEST_PASS_ENV"
 
     # config may keep the worktree root symbolic ('$HOME/...'); expand that
     # one prefix without eval, then insist on an absolute path.
@@ -75,55 +69,98 @@ Run ./init first (see ./init --help), or ./init --demo for the built-in demo."
     [ -n "${OVERLORD_TEST_CMD:-}" ]    || die "OVERLORD_TEST_CMD is not set in $OVERLORD_CONFIG — re-run ./init"
     [ -n "${OVERLORD_WORKER_CMD:-}" ]  || die "OVERLORD_WORKER_CMD is not set in $OVERLORD_CONFIG — re-run ./init"
     [ -n "${OVERLORD_REVIEWER_CMD:-}" ] || die "OVERLORD_REVIEWER_CMD is not set in $OVERLORD_CONFIG — re-run ./init"
-    OVERLORD_APPROVAL_RULE="${OVERLORD_APPROVAL_RULE:-human}"
     OVERLORD_WORKTREE_ROOT="${OVERLORD_WORKTREE_ROOT:-$HOME/.overlord-daycare/worktrees/$(basename "$OVERLORD_PROJECT_DIR")}"
     OVERLORD_WORKER_TIMEOUT="${OVERLORD_WORKER_TIMEOUT:-1800}"
     OVERLORD_REVIEWER_TIMEOUT="${OVERLORD_REVIEWER_TIMEOUT:-900}"
-    OVERLORD_TEST_TIMEOUT="${OVERLORD_TEST_TIMEOUT:-1200}"
     OVERLORD_ALLOW_ENV="${OVERLORD_ALLOW_ENV:-PATH HOME LANG LC_* TERM TMPDIR}"
     OVERLORD_PASS_ENV="${OVERLORD_PASS_ENV:-}"
-    OVERLORD_TEST_PASS_ENV="${OVERLORD_TEST_PASS_ENV:-}"
 }
 
-# ---- Environment allowlist and scrubbing -----------------------------------
-# Worktrees isolate files, not credentials: child processes inherit the shell
-# environment. Worker, reviewer, and final test commands all run in a scrubbed
-# environment starting from an empty env (env -i) plus an explicit allowlist.
-# Safe default allowlist:
-#   PATH HOME LANG LC_* TERM TMPDIR
-# Configurable via OVERLORD_ALLOW_ENV in config.env. Additional variables
-# needed by a lane or test suite are passed via OVERLORD_PASS_ENV or
-# OVERLORD_TEST_PASS_ENV.
+# ---- Per-task environment allowlist (minimal) --------------------------------
+# Workers get only the credentials their task needs, via a per-task profile.
+# This is an allowlist helper for launching workers, not a sandbox: it decides
+# which variables a launched process starts with. Production credentials must
+# never be listed here at all (see HOW-WE-WORK.md).
+#
+# Two small invariants are enforced:
+#   1. Control characters are rejected in variable names and values — a
+#      profile line or pass-through name containing them fails closed.
+#   2. The allowlist and profile live outside worker-writable paths. The
+#      profile for a task is $OVERLORD_DIR/profiles/<task>.env (kit state,
+#      never inside a worktree); if a profile path ever resolves inside the
+#      task worktree, launching refuses.
+
+# valid_env_name <name> — shell identifier shape, nothing else.
+valid_env_name() {
+    case "$1" in
+        ''|[0-9]*|*[!A-Za-z0-9_]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# env_has_control <string> — true (0) if it contains a control character.
+env_has_control() {
+    printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'
+}
+
+# task_env_profile <task> — where the per-task profile lives (outside worktrees).
+task_env_profile() { printf '%s/profiles/%s.env' "$OVERLORD_DIR" "$1"; }
+
+# assert_profile_outside_worktree <profile> <worktree>
+assert_profile_outside_worktree() {
+    case "$1" in
+        "$2"|"$2"/*) die "env profile '$1' is inside the worker-writable worktree '$2' — move it outside (profiles belong under $OVERLORD_DIR/profiles/)" ;;
+    esac
+}
+
+# load_task_profile <task> <worktree> — validate and export the per-task profile.
+# Format: one KEY=VALUE per line; blank lines and # comments are ignored.
+# Any control character, bad name, or in-worktree location refuses the launch.
+load_task_profile() {
+    local task="$1" worktree="$2" profile line key val
+    profile="$(task_env_profile "$task")"
+    [ -f "$profile" ] || return 0
+    assert_profile_outside_worktree "$profile" "$worktree"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        if env_has_control "$line"; then
+            die "env profile $profile: line contains a control character — refusing to launch (fix the profile)"
+        fi
+        case "$line" in
+            *=*) ;;
+            *) die "env profile $profile: expected KEY=VALUE, got: $line" ;;
+        esac
+        key="${line%%=*}"
+        val="${line#*=}"
+        valid_env_name "$key" || die "env profile $profile: invalid variable name '$key'"
+        export "$key=$val"
+        # Remember the name so run_bounded allowlists it for this launch.
+        OVERLORD_PROFILE_VARS="${OVERLORD_PROFILE_VARS:-} $key"
+    done < "$profile"
+}
+
+# lane_env_allowlist — names/patterns a launched worker or reviewer may keep.
 lane_env_allowlist() {
     printf '%s %s %s %s\n' \
         "${OVERLORD_ALLOW_ENV:-PATH HOME LANG LC_* TERM TMPDIR}" \
         "PROMPT PROMPT_FILE OVERLORD_WORKTREE OVERLORD_TASK" \
         "${OVERLORD_PASS_ENV:-}" \
-        "${OVERLORD_TEST_PASS_ENV:-}"
+        "${OVERLORD_PROFILE_VARS:-}"
 }
 
-lane_scrub_env() {
-    local v pat allowed
-    local allowlist
-    allowlist="$(lane_env_allowlist)"
-
-    while IFS= read -r v; do
-        [ -z "$v" ] && continue
-        allowed=0
-        for pat in $allowlist; do
-            # shellcheck disable=SC2053
-            if [[ "$v" == $pat ]]; then
-                allowed=1
-                break
-            fi
-        done
-        if [ "$allowed" -eq 0 ]; then
-            unset "$v" 2>/dev/null || true
+# Validate every pass-through/profile name once; bad names fail closed here
+# rather than silently never matching in the child environment.
+validate_allowlist_names() {
+    local name
+    for name in $(lane_env_allowlist); do
+        case "$name" in
+            *'*') continue ;;  # patterns like LC_* are intentional
+        esac
+        if env_has_control "$name"; then
+            die "environment allowlist entry contains a control character: refusing to launch"
         fi
-    done < <(
-        export -p | grep -E '^(declare -x|export) [A-Za-z_][A-Za-z0-9_]*=' \
-            | sed -E 's/^(declare -x|export) ([A-Za-z_][A-Za-z0-9_]*)=.*/\2/'
-    )
+        valid_env_name "$name" || die "invalid environment variable name in allowlist: '$name'"
+    done
 }
 
 # Validate a task name (it becomes a branch name mt/<task> and a directory).
@@ -141,25 +178,44 @@ task_run_dir() { printf '%s/runs/%s' "$OVERLORD_DIR" "$1"; }
 
 # Run a shell command string under a time bound if `timeout`/`gtimeout` exists
 # (macOS has neither by default; then the run is unbounded and we say so).
-# Commands execute in an empty environment (env -i) plus the allowlist.
+# The command runs from an empty environment (env -i) plus the allowlist:
+# base allowlist + per-task profile (already exported by load_task_profile).
+# An allowlisted variable whose value contains a control character refuses
+# the launch — secrets and paths never need one.
 run_bounded() {
     local secs="$1" cmd="$2" t="" rc=0
     if command -v timeout >/dev/null 2>&1; then t=timeout
     elif command -v gtimeout >/dev/null 2>&1; then t=gtimeout
     fi
 
-    # Scrub environment starting from empty env (env -i) plus explicit allowlist
-    lane_scrub_env
+    validate_allowlist_names
 
+    local allowlist v pat allowed
+    allowlist="$(lane_env_allowlist)"
     local -a env_args=()
-    local v
+    local -a present=()
     while IFS= read -r v; do
         [ -z "$v" ] && continue
-        env_args+=("$v=${!v}")
+        present+=("$v")
     done < <(
         export -p | grep -E '^(declare -x|export) [A-Za-z_][A-Za-z0-9_]*=' \
             | sed -E 's/^(declare -x|export) ([A-Za-z_][A-Za-z0-9_]*)=.*/\2/'
     )
+    for v in "${present[@]}"; do
+        allowed=0
+        for pat in $allowlist; do
+            # shellcheck disable=SC2053
+            if [[ "$v" == $pat ]]; then
+                allowed=1
+                break
+            fi
+        done
+        [ "$allowed" -eq 1 ] || continue
+        if env_has_control "${!v}"; then
+            die "environment variable $v contains a control character — refusing to launch (unset it or fix its value)"
+        fi
+        env_args+=("$v=${!v}")
+    done
 
     local old_ifs="$IFS"
     IFS=$'\x1f'

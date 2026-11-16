@@ -8,7 +8,7 @@
 #   .overlord/*.md         — small starter files the skill points at
 #
 # Non-interactive: pass flags (--project, --test-cmd, --worker, --reviewer,
-# --approval, --base, --worktree-root) or set OVERLORD_* env vars as defaults.
+# --base, --worktree-root) or set OVERLORD_* env vars as defaults.
 # ./init --demo configures the built-in demo project instead. Idempotent:
 # re-running updates the config; the .overlord/*.md starter files are only created
 # if missing so your edits survive.
@@ -29,7 +29,6 @@ options:
   --test-cmd CMD      command that runs the tests in the project root
   --worker CMD        worker AI command template ('"$PROMPT"' = task text)
   --reviewer CMD      reviewer AI command template ('"$PROMPT"' = review text)
-  --approval RULE     human (default) or auto (see README)
   --worktree-root D   where task worktrees live
   --force             no extra effect today: config is always rewritten;
                       here so scripts/CI can be explicit
@@ -41,7 +40,7 @@ EOF
 }
 
 DEMO=0
-PROJECT="" BASE="" TESTCMD="" WORKER="" REVIEWER="" APPROVAL="" WTROOT="" ALLOW_ENV=""
+PROJECT="" BASE="" TESTCMD="" WORKER="" REVIEWER="" WTROOT="" ALLOW_ENV=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -51,7 +50,6 @@ while [ $# -gt 0 ]; do
         --test-cmd) shift; TESTCMD="${1:-}" ;;
         --worker) shift; WORKER="${1:-}" ;;
         --reviewer) shift; REVIEWER="${1:-}" ;;
-        --approval) shift; APPROVAL="${1:-}" ;;
         --worktree-root) shift; WTROOT="${1:-}" ;;
         --allow-env) shift; ALLOW_ENV="${1:-}" ;;
         --force) : ;;
@@ -89,20 +87,18 @@ detect_base() {
 }
 
 # ---- Existing config provides defaults (idempotent re-runs) ----------------
-OLD_PROJECT="" OLD_TESTCMD="" OLD_WORKER="" OLD_REVIEWER="" OLD_APPROVAL="" OLD_ALLOW=""
+OLD_PROJECT="" OLD_TESTCMD="" OLD_WORKER="" OLD_REVIEWER="" OLD_ALLOW=""
 if [ -f "$OVERLORD_CONFIG" ]; then
     OLD_PROJECT="$(  sed -n "s/^OVERLORD_PROJECT_DIR='\(.*\)'$/\1/p" "$OVERLORD_CONFIG" | tail -1)"
     OLD_TESTCMD="$(  sed -n "s/^OVERLORD_TEST_CMD='\(.*\)'$/\1/p"       "$OVERLORD_CONFIG" | tail -1)"
     OLD_WORKER="$(   sed -n "s/^OVERLORD_WORKER_CMD='\(.*\)'$/\1/p"     "$OVERLORD_CONFIG" | tail -1)"
     OLD_REVIEWER="$( sed -n "s/^OVERLORD_REVIEWER_CMD='\(.*\)'$/\1/p"   "$OVERLORD_CONFIG" | tail -1)"
-    OLD_APPROVAL="$( sed -n "s/^OVERLORD_APPROVAL_RULE='\(.*\)'$/\1/p"  "$OVERLORD_CONFIG" | tail -1)"
     OLD_ALLOW="$(    sed -n "s/^OVERLORD_ALLOW_ENV='\(.*\)'$/\1/p"      "$OVERLORD_CONFIG" | tail -1)"
 fi
 [ -n "$PROJECT"   ] || PROJECT="${OVERLORD_PROJECT_DIR:-$OLD_PROJECT}"
 [ -n "$TESTCMD"   ] || TESTCMD="${OVERLORD_TEST_CMD:-$OLD_TESTCMD}"
 [ -n "$WORKER"    ] || WORKER="${OVERLORD_WORKER_CMD:-$OLD_WORKER}"
 [ -n "$REVIEWER"  ] || REVIEWER="${OVERLORD_REVIEWER_CMD:-$OLD_REVIEWER}"
-[ -n "$APPROVAL"  ] || APPROVAL="${OVERLORD_APPROVAL_RULE:-$OLD_APPROVAL}"
 [ -n "$ALLOW_ENV" ] || ALLOW_ENV="${OVERLORD_ALLOW_ENV:-$OLD_ALLOW}"
 
 # ---- Demo mode: build the throwaway project repo ----------------------------
@@ -147,7 +143,6 @@ if [ "$DEMO" -eq 1 ]; then
         warn "that apply a canned fix with no AI. Install a CLI and re-run"
         warn "./init --demo to see the real thing."
     fi
-    [ -n "$APPROVAL" ] || APPROVAL="human"
 fi
 
 # ---- Real project: gather the remaining values ------------------------------
@@ -200,17 +195,11 @@ if [ "$DEMO" -ne 1 ]; then
             warn "worker and reviewer commands are identical — an independent"
             warn "reviewer (a different model family) catches more (HOW-WE-WORK.md §1)."
         fi
-        [ -n "$APPROVAL" ] || APPROVAL="human"
-        ask APPROVAL "6. Approval rule: human or auto" "$APPROVAL"
         [ -n "$WTROOT" ] || WTROOT="$HOME/.overlord-daycare/worktrees/$(basename "$PROJECT")"
-        ask WTROOT "7. Directory for task worktrees" "$WTROOT"
+        ask WTROOT "6. Directory for task worktrees" "$WTROOT"
     fi
 fi
 
-case "$APPROVAL" in
-    human|auto) ;;
-    *) die "approval rule must be 'human' or 'auto', got: $APPROVAL" ;;
-esac
 [ -n "$WTROOT" ] || WTROOT="$HOME/.overlord-daycare/worktrees/$(basename "$PROJECT")"
 case "$WTROOT" in
     /*) : ;;
@@ -236,13 +225,13 @@ mkdir -p "$OVERLORD_DIR"
     echo "# Reviewer AI: read-only, gets the diff in \$PROMPT. Use a DIFFERENT"
     echo "# model family than the worker when you can."
     echo "OVERLORD_REVIEWER_CMD=$(shell_quote "$REVIEWER")"
-    echo "# human: merge gate asks a human (default, recommended)."
-    echo "# auto: merge with no prompt, only when tests pass AND review is CLEAN."
-    echo "OVERLORD_APPROVAL_RULE=$(shell_quote "$APPROVAL")"
+    echo "# Merging is the hosting platform's job: branch protection + required"
+    echo "# checks merge the PR (see docs/ci-and-gates.md). Workers never merge."
     echo "# Where task worktrees live (outside both repos)."
     echo "OVERLORD_WORKTREE_ROOT=$(shell_quote "$WTROOT")"
-    echo "# Credentials: worktrees isolate files, not secrets. Commands run with an"
-    echo "# explicit environment allowlist starting from an empty env (env -i)."
+    echo "# Credentials: workers get only what their task needs, via a per-task"
+    echo "# profile at .overlord/profiles/<task>.env (outside worker-writable"
+    echo "# paths). Commands start from an empty env (env -i) plus an allowlist."
     echo "# Safe default allowlist: PATH HOME LANG LC_* TERM TMPDIR"
     echo "OVERLORD_ALLOW_ENV=$(shell_quote "${ALLOW_ENV:-PATH HOME LANG LC_* TERM TMPDIR}")"
     echo "# Additional pass-through variables a task or test genuinely needs (space-separated)."
@@ -250,7 +239,6 @@ mkdir -p "$OVERLORD_DIR"
     echo "# Time bounds, seconds (no bound if 'timeout' is unavailable)."
     echo "OVERLORD_WORKER_TIMEOUT='1800'"
     echo "OVERLORD_REVIEWER_TIMEOUT='900'"
-    echo "OVERLORD_TEST_TIMEOUT='1200'"
 } > "$OVERLORD_CONFIG"
 info "==> wrote $OVERLORD_CONFIG"
 
@@ -260,10 +248,10 @@ sed \
     -e "s|<<YOUR HANDOFF FILE>>|$OVERLORD_DIR/HANDOFF.md|g" \
     -e "s|<<YOUR HEARTBEAT CHECKLIST>>|$OVERLORD_DIR/HEARTBEAT.md|g" \
     -e "s|<<YOUR DASHBOARD ENDPOINT>>|(optional — not configured; starter: bin/pace on .overlord/meters.json, see docs/pacing.md)|g" \
-    -e "s|<<YOUR PUSH SCRIPT>>|(optional — this kit never pushes; script it when you add CI)|g" \
-    -e "s|<<YOUR CHECKS SCRIPT>>|$OVERLORD_KIT/bin/check-and-merge <task> (runs the tests on the task branch)|g" \
+    -e "s|<<YOUR PUSH SCRIPT>>|(git push of the task branch + opening its PR; workers push, never merge)|g" \
+    -e "s|<<YOUR CHECKS SCRIPT>>|(the platform required checks on the PR; see docs/ci-and-gates.md)|g" \
     -e "s|<<YOUR PREFLIP REVIEW>>|$OVERLORD_KIT/bin/review <task> (independent reviewer on the exact head)|g" \
-    -e "s|<<YOUR FLIP SCRIPT>>|(the approval + merge step inside $OVERLORD_KIT/bin/check-and-merge)|g" \
+    -e "s|<<YOUR FLIP SCRIPT>>|$OVERLORD_KIT/bin/merge-when-green --task <task> (enables platform auto-merge when green)|g" \
     -e "s|<<YOUR DEFERRED LOG>>|$OVERLORD_DIR/DEFERRED.md|g" \
     -e "s|<<YOUR BOARD>>|$OVERLORD_DIR/BOARD.md|g" \
     -e "s|<<YOUR CRITICAL LIST>>|$OVERLORD_DIR/CRITICAL-LIST.md|g" \
@@ -333,7 +321,7 @@ here (HOW-WE-WORK.md §6). A ~30-minute scheduler prompt can be simply:
     Read .overlord/HEARTBEAT.md and do what it says.
 
 - [ ] bin/status — act on every warning
-- [ ] Anything to merge? (tests + review clean → merge gate)
+- [ ] Any PR green? (checks + review clean on exact head → bin/merge-when-green)
 - [ ] New tasks to start? (bin/worker / bin/loop)
 - [ ] Update .overlord/HANDOFF.md if anything changed
 EOF
@@ -370,16 +358,15 @@ info "  project : $PROJECT (base: ${BASE:-main})"
 info "  tests   : ${TESTCMD:-true}"
 info "  worker  : $WORKER"
 info "  reviewer: $REVIEWER"
-info "  approval: $APPROVAL"
 echo
 if [ "$DEMO" -eq 1 ]; then
     info "Run the whole supervised loop now:"
     info "  bin/loop demo examples/demo-task.md"
     info "You will see: worktree created -> worker fix -> tests -> independent"
-    info "review -> 'Merge into main? [y/N]'. Answer y to merge. Never pushes."
+    info "review -> PR checks. The platform merges when green; workers never merge."
 else
     info "First loop on your project — write a small task file, then:"
     info "  bin/loop my-first-task path/to/task.md"
-    info "Step by step instead: bin/worker, bin/review, bin/check-and-merge."
+    info "Step by step instead: bin/worker, bin/review, bin/merge-when-green."
     info "The coordinator's operating manual is at .overlord/SKILL.md (yours to edit)."
 fi
